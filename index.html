@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,97 +9,495 @@
   <title>Mis Hábitos</title>
 
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; padding-bottom: 80px; }
-    h1 { font-size: 24px; margin-bottom: 20px; text-align: center; }
-    .tabs { display: flex; gap: 8px; margin-bottom: 20px; background: #2a2a2a; padding: 4px; border-radius: 10px; }
-    .tab { flex: 1; padding: 10px; background: transparent; border: none; color: #888; border-radius: 8px; cursor: pointer; font-size: 14px; }
-    .tab.active { background: #3a3a3a; color: #fff; }
-    .view { display: none; }
-    .view.active { display: block; }
-
-    .habit-card { background: #2a2a2a; padding: 15px; border-radius: 10px; margin-bottom: 12px; border-left: 4px solid; }
-    .habit-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-    .habit-icon { font-size: 28px; }
-    .habit-info { flex: 1; min-width: 120px; }
-    .habit-name { font-size: 18px; font-weight: 600; }
-    .habit-freq { font-size: 12px; color: #888; margin-top: 2px; }
-
-    .btn { padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
-    .btn-check { background: #4CAF50; color: white; }
-    .btn-check.completed { background: #666; }
-    .btn-edit { background: #3a3a3a; color: white; }
-    .btn-delete { background: #ff4444; color: white; }
-
-    .stats { display: flex; gap: 15px; font-size: 13px; color: #888; margin-top: 8px; }
-    .stat span { color: #4CAF50; font-weight: 600; }
-
-    .add-btn {
-      position: fixed; bottom: 20px; right: 20px; width: 60px; height: 60px; border-radius: 50%;
-      background: #4CAF50; border: none; color: white; font-size: 30px; cursor: pointer;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 100;
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
 
-    .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; padding: 20px; z-index: 1000; overflow-y: auto; }
-    .modal.active { display: flex; }
-    .modal-content { background: #2a2a2a; padding: 20px; border-radius: 12px; width: 100%; max-width: 400px; max-height: 90vh; overflow-y: auto; }
-    .modal-title { font-size: 20px; margin-bottom: 20px; font-weight: 600; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      padding: 20px;
+      padding-bottom: 80px;
+    }
 
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 8px; font-size: 14px; }
-    input, select { width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #3a3a3a; border-radius: 6px; color: #e0e0e0; font-size: 16px; }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
 
-    .icon-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
-    .icon-btn { padding: 10px; background: #1a1a1a; border: 2px solid transparent; border-radius: 6px; font-size: 24px; cursor: pointer; }
-    .icon-btn.selected { border-color: #4CAF50; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      background: #2a2a2a;
+      padding: 4px;
+      border-radius: 10px;
+    }
 
-    .color-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-    .color-btn { height: 40px; border: 3px solid transparent; border-radius: 6px; cursor: pointer; }
-    .color-btn.selected { border-color: white; }
+    .tab {
+      flex: 1;
+      padding: 10px;
+      background: transparent;
+      border: none;
+      color: #888;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
 
-    .freq-options { display: flex; flex-direction: column; gap: 10px; }
-    .freq-option { padding: 12px; background: #1a1a1a; border: 2px solid transparent; border-radius: 6px; cursor: pointer; }
-    .freq-option.selected { border-color: #4CAF50; }
-    .freq-details { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .freq-details input, .freq-details select { width: auto; min-width: 70px; }
+    .tab.active {
+      background: #3a3a3a;
+      color: #fff;
+    }
 
-    .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
-    .btn-primary, .btn-secondary { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: 600; }
-    .btn-primary { background: #4CAF50; color: white; }
-    .btn-secondary { background: #3a3a3a; color: white; }
+    .view {
+      display: none;
+    }
 
-    .empty-state { text-align: center; color: #888; margin-top: 50px; }
+    .view.active {
+      display: block;
+    }
 
-    .calendar { background: #2a2a2a; padding: 15px; border-radius: 10px; }
-    .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-    .calendar-nav { background: #3a3a3a; border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; }
-    .calendar-month { font-weight: 600; }
-    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-    .calendar-day-header { text-align: center; font-size: 11px; color: #888; padding: 8px 0; font-weight: 600; }
+    .habit-card {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      border-left: 4px solid;
+    }
 
-    .calendar-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: #1a1a1a; border-radius: 6px; font-size: 13px; cursor: pointer; position: relative; }
-    .calendar-day.other-month { color: #555; }
-    .calendar-day.today { border: 2px solid #4CAF50; }
-    .calendar-day.future { opacity: 0.3; cursor: not-allowed; }
-    .calendar-day.completed::after { content: ''; position: absolute; bottom: 2px; width: 4px; height: 4px; background: #4CAF50; border-radius: 50%; }
+    .habit-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
 
-    .habit-selector { margin-bottom: 15px; }
+    .habit-icon {
+      font-size: 28px;
+    }
 
-    .stats-card { background: #2a2a2a; padding: 15px; border-radius: 10px; margin-bottom: 15px; border-left: 4px solid; }
-    .stats-header { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
-    .stats-title { flex: 1; font-size: 18px; font-weight: 600; }
+    .habit-info {
+      flex: 1;
+      min-width: 120px;
+    }
 
-    .stats-numbers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
-    .stat-box { background: #1a1a1a; padding: 12px; border-radius: 6px; text-align: center; }
-    .stat-value { font-size: 24px; font-weight: 600; color: #4CAF50; }
-    .stat-label { font-size: 11px; color: #888; margin-top: 4px; }
+    .habit-name {
+      font-size: 18px;
+      font-weight: 600;
+    }
 
-    .chart { margin-top: 15px; }
-    .chart-title { font-size: 13px; color: #888; margin-bottom: 10px; }
-    .chart-bars { display: flex; align-items: flex-end; justify-content: space-between; height: 150px; gap: 4px; }
-    .chart-bar-wrapper { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-    .chart-bar { width: 100%; background: #4CAF50; border-radius: 4px 4px 0 0; min-height: 2px; transition: all 0.3s; }
-    .chart-label { font-size: 10px; color: #888; margin-top: 5px; }
+    .habit-freq {
+      font-size: 12px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-check {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .btn-check.completed {
+      background: #666;
+    }
+
+    .btn-edit {
+      background: #3a3a3a;
+      color: white;
+    }
+
+    .btn-delete {
+      background: #ff4444;
+      color: white;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      font-size: 12px;
+      color: #888;
+      margin-top: 10px;
+    }
+
+    .stat {
+      background: #1a1a1a;
+      padding: 8px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      color: #4CAF50;
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .add-btn {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: none;
+      color: white;
+      font-size: 30px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.9);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 1000;
+      overflow-y: auto;
+    }
+
+    .modal.active {
+      display: flex;
+    }
+
+    .modal-content {
+      background: #2a2a2a;
+      padding: 20px;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 400px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .modal-title {
+      font-size: 20px;
+      margin-bottom: 20px;
+      font-weight: 600;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 10px;
+      background: #1a1a1a;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 16px;
+    }
+
+    .icon-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+
+    .icon-btn {
+      padding: 10px;
+      background: #1a1a1a;
+      border: 2px solid transparent;
+      border-radius: 6px;
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    .icon-btn.selected {
+      border-color: #4CAF50;
+    }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+
+    .color-btn {
+      height: 40px;
+      border: 3px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .color-btn.selected {
+      border-color: white;
+    }
+
+    .freq-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .freq-option {
+      padding: 12px;
+      background: #1a1a1a;
+      border: 2px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .freq-option.selected {
+      border-color: #4CAF50;
+    }
+
+    .freq-details {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .freq-details input,
+    .freq-details select {
+      width: auto;
+      min-width: 70px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .btn-primary,
+    .btn-secondary {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn-primary {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .btn-secondary {
+      background: #3a3a3a;
+      color: white;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: #888;
+      margin-top: 50px;
+    }
+
+    .calendar {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 10px;
+    }
+
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .calendar-nav {
+      background: #3a3a3a;
+      border: none;
+      color: white;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .calendar-month {
+      font-weight: 600;
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+    }
+
+    .calendar-day-header {
+      text-align: center;
+      font-size: 11px;
+      color: #888;
+      padding: 8px 0;
+      font-weight: 600;
+    }
+
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1a1a1a;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .calendar-day.other-month {
+      color: #555;
+    }
+
+    .calendar-day.today {
+      border: 2px solid #4CAF50;
+    }
+
+    .calendar-day.future {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .calendar-day.completed::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      width: 4px;
+      height: 4px;
+      background: #4CAF50;
+      border-radius: 50%;
+    }
+
+    .habit-selector {
+      margin-bottom: 15px;
+    }
+
+    .stats-card {
+      background: #2a2a2a;
+      padding: 16px;
+      border-radius: 10px;
+      margin-bottom: 15px;
+      border-left: 4px solid;
+    }
+
+    .stats-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .stats-title {
+      flex: 1;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .stats-numbers {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .stat-box {
+      background: #1a1a1a;
+      padding: 12px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .stat-box-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #4CAF50;
+      margin-bottom: 4px;
+    }
+
+    .stat-box-label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart {
+      margin-top: 16px;
+    }
+
+    .chart-title {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart-bars {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      height: 80px;
+      gap: 3px;
+    }
+
+    .chart-bar-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      height: 100%;
+    }
+
+    .chart-bar {
+      width: 100%;
+      border-radius: 3px 3px 0 0;
+      min-height: 2px;
+      transition: all 0.3s;
+    }
+
+    .chart-label {
+      font-size: 9px;
+      color: #888;
+      margin-top: 5px;
+      font-weight: 600;
+    }
   </style>
 </head>
 
@@ -179,7 +578,6 @@
       currentView: 'today'
     };
 
-    // --- Fechas locales (evita el bug UTC en iPhone) ---
     function toLocalDateStr(date = new Date()) {
       const y = date.getFullYear();
       const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -203,7 +601,6 @@
       if (h) state.habits = JSON.parse(h);
       if (c) state.completions = JSON.parse(c);
 
-      // mini-migración por si faltan campos
       state.habits = state.habits.map(hb => ({
         freq: 'daily',
         freqCount: 7,
@@ -292,9 +689,22 @@
               <button class="btn btn-delete" data-action="delete" data-id="${habit.id}">🗑️</button>
             </div>
             <div class="stats">
-              <div class="stat">Semana: <span>${stats.week}%</span></div>
-              <div class="stat">Mes: <span>${stats.month}%</span></div>
-              <div class="stat">Racha: <span>${stats.streak}</span></div>
+              <div class="stat">
+                <div class="stat-label">Tasa éxito</div>
+                <div class="stat-value">${stats.successRate}%</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Racha</div>
+                <div class="stat-value">${stats.currentStreak}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Mejor racha</div>
+                <div class="stat-value">${stats.bestStreak}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Total</div>
+                <div class="stat-value">${stats.totalCompleted}</div>
+              </div>
             </div>
           </div>
         `;
@@ -310,40 +720,55 @@
         };
       });
     }
-
     function calculateStats(habit) {
       const today = new Date();
-      today.setHours(0,0,0,0);
+      today.setHours(0, 0, 0, 0);
 
-      let weekCount = 0, monthCount = 0, streak = 0;
+      let totalDays = 0;
+      let completedDays = 0;
+      let currentStreak = 0;
+      let bestStreak = 0;
+      let tempStreak = 0;
 
-      for (let i = 0; i < 7; i++) {
+      // Últimos 90 días para calcular estadísticas
+      for (let i = 0; i < 90; i++) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
         const ds = toLocalDateStr(d);
-        if (state.completions[ds]?.[habit.id]) weekCount++;
-      }
 
-      for (let i = 0; i < 30; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const ds = toLocalDateStr(d);
-        if (state.completions[ds]?.[habit.id]) monthCount++;
-      }
+        // Solo contar días donde el hábito aplica según frecuencia
+        if (shouldTrackOnDate(habit, d)) {
+          totalDays++;
+          const completed = state.completions[ds]?.[habit.id] || false;
 
-      for (let i = 0; i < 365; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const ds = toLocalDateStr(d);
-        if (state.completions[ds]?.[habit.id]) streak++;
-        else break;
+          if (completed) {
+            completedDays++;
+            tempStreak++;
+            // Solo cuenta para racha actual si es consecutivo desde hoy
+            if (i === 0 || currentStreak > 0) {
+              currentStreak++;
+            }
+          } else {
+            tempStreak = 0;
+            if (i === 0) currentStreak = 0;
+          }
+
+          bestStreak = Math.max(bestStreak, tempStreak);
+        }
       }
 
       return {
-        week: Math.round((weekCount / 7) * 100),
-        month: Math.round((monthCount / 30) * 100),
-        streak
+        successRate: totalDays > 0 ? Math.round((completedDays / totalDays) * 100) : 0,
+        currentStreak,
+        bestStreak,
+        totalCompleted: completedDays
       };
+    }
+
+    function shouldTrackOnDate(habit, date) {
+      if (habit.freq === 'daily') return true;
+      if (habit.freq === 'custom') return true;
+      return true;
     }
 
     function toggleHabit(id, date) {
@@ -357,7 +782,6 @@
       if (!confirm('¿Eliminar este hábito?')) return;
       state.habits = state.habits.filter(h => h.id !== id);
 
-      // opcional: limpiar completions del hábito borrado
       for (const day in state.completions) {
         if (state.completions[day] && typeof state.completions[day] === 'object') {
           delete state.completions[day][id];
@@ -423,23 +847,23 @@
       });
 
       document.getElementById('freqOptions').innerHTML = `
-        <div class="freq-option ${state.selectedFreq === 'daily' ? 'selected' : ''}" data-freq="daily">
-          <strong>Todos los días</strong>
-        </div>
-        <div class="freq-option ${state.selectedFreq === 'custom' ? 'selected' : ''}" data-freq="custom">
-          <strong>Personalizado</strong>
-          ${state.selectedFreq === 'custom' ? `
-            <div class="freq-details">
-              <input type="number" min="1" max="30" value="${state.freqCount}" id="freqCountInput">
-              <span>veces por</span>
-              <select id="freqPeriodInput">
-                <option value="week" ${state.freqPeriod === 'week' ? 'selected' : ''}>semana</option>
-                <option value="month" ${state.freqPeriod === 'month' ? 'selected' : ''}>mes</option>
-              </select>
-            </div>
-          ` : ''}
-        </div>
-      `;
+<div class="freq-option ${state.selectedFreq === 'daily' ? 'selected' : ''}" data-freq="daily">
+<strong>Todos los días</strong>
+</div>
+<div class="freq-option ${state.selectedFreq === 'custom' ? 'selected' : ''}" data-freq="custom">
+<strong>Personalizado</strong>
+${state.selectedFreq === 'custom' ? `
+<div class="freq-details">
+<input type="number" min="1" max="30" value="${state.freqCount}" id="freqCountInput">
+<span>veces por</span>
+<select id="freqPeriodInput">
+<option value="week" ${state.freqPeriod === 'week' ? 'selected' : ''}>semana</option>
+<option value="month" ${state.freqPeriod === 'month' ? 'selected' : ''}>mes</option>
+</select>
+</div>
+` : ''}
+</div>
+`;
 
       document.querySelectorAll('.freq-option').forEach(opt => {
         opt.onclick = () => {
@@ -519,7 +943,7 @@
       const month = state.currentMonth.getMonth();
 
       const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-                          'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
       document.getElementById('currentMonth').textContent = `${monthNames[month]} ${year}`;
 
       const firstDay = new Date(year, month, 1);
@@ -528,7 +952,7 @@
       const daysInMonth = lastDay.getDate();
 
       const today = new Date();
-      today.setHours(0,0,0,0);
+      today.setHours(0, 0, 0, 0);
 
       let html = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
         .map(d => `<div class="calendar-day-header">${d}</div>`)
@@ -542,8 +966,9 @@
         const date = new Date(year, month - 1, day);
         const dateStr = toLocalDateStr(date);
         const isCompleted = state.completions[dateStr]?.[habitId];
+        const isFuture = date > today;
 
-        html += `<div class="calendar-day other-month ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-habit="${habitId}">${day}</div>`;
+        html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
       }
 
       for (let day = 1; day <= daysInMonth; day++) {
@@ -554,7 +979,7 @@
         const isFuture = date > today;
 
         html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-          data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
       }
 
       const remainingDays = 42 - (startDay + daysInMonth);
@@ -565,7 +990,7 @@
         const isFuture = date > today;
 
         html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-          data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
       }
 
       grid.innerHTML = html;
@@ -597,7 +1022,7 @@
         const stats = calculateStats(habit);
         const last7Days = [];
         const today = new Date();
-        today.setHours(0,0,0,0);
+        today.setHours(0, 0, 0, 0);
 
         for (let i = 6; i >= 0; i--) {
           const d = new Date(today);
@@ -611,46 +1036,51 @@
         }
 
         const barsHtml = last7Days.map(day => `
-          <div class="chart-bar-wrapper">
-            <div class="chart-bar" style="height: ${day.value * 100}%"></div>
-            <div class="chart-label">${day.label}</div>
-          </div>
-        `).join('');
+<div class="chart-bar-wrapper">
+<div class="chart-bar" style="height: ${day.value * 100}%; background: ${habit.color};"></div>
+<div class="chart-label">${day.label}</div>
+</div>
+`).join('');
 
         return `
-          <div class="stats-card" style="border-left-color: ${habit.color}">
-            <div class="stats-header">
-              <span class="habit-icon">${habit.icon}</span>
-              <span class="stats-title">${habit.name}</span>
-            </div>
+<div class="stats-card" style="border-left-color: ${habit.color}">
+<div class="stats-header">
+<span class="habit-icon">${habit.icon}</span>
+<span class="stats-title">${habit.name}</span>
+</div>
 
-            <div class="stats-numbers">
-              <div class="stat-box">
-                <div class="stat-value">${stats.week}%</div>
-                <div class="stat-label">Última semana</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-value">${stats.month}%</div>
-                <div class="stat-label">Últimos 30 días</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-value">${stats.streak}</div>
-                <div class="stat-label">Racha</div>
-              </div>
-            </div>
+<div class="stats-numbers">
+<div class="stat-box">
+<div class="stat-box-value">${stats.successRate}%</div>
+<div class="stat-box-label">Tasa de éxito</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.currentStreak}</div>
+<div class="stat-box-label">Racha actual</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.bestStreak}</div>
+<div class="stat-box-label">Mejor racha</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.totalCompleted}</div>
+<div class="stat-box-label">Total completados</div>
+</div>
+</div>
 
-            <div class="chart">
-              <div class="chart-title">Últimos 7 días</div>
-              <div class="chart-bars">
-                ${barsHtml}
-              </div>
-            </div>
-          </div>
-        `;
+<div class="chart">
+<div class="chart-title">Últimos 7 días</div>
+<div class="chart-bars">
+${barsHtml}
+</div>
+</div>
+</div>
+`;
       }).join('');
     }
 
     init();
   </script>
 </body>
+
 </html>
