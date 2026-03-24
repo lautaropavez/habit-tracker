@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#1a1a1a" />
+  <title>Mis Hábitos</title>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      padding: 20px;
+      padding-bottom: 80px;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      background: #2a2a2a;
+      padding: 4px;
+      border-radius: 10px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 10px;
+      background: transparent;
+      border: none;
+      color: #888;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .tab.active {
+      background: #3a3a3a;
+      color: #fff;
+    }
+
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    .habit-card {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      border-left: 4px solid;
+    }
+
+    .habit-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    .habit-icon {
+      font-size: 28px;
+    }
+
+    .habit-info {
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .habit-name {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .habit-freq {
+      font-size: 12px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-check {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .btn-check.completed {
+      background: #666;
+    }
+
+    .btn-edit {
+      background: #3a3a3a;
+      color: white;
+    }
+
+    .btn-delete {
+      background: #ff4444;
+      color: white;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      font-size: 12px;
+      color: #888;
+      margin-top: 10px;
+    }
+
+    .stat {
+      background: #1a1a1a;
+      padding: 8px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      color: #4CAF50;
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .add-btn {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: none;
+      color: white;
+      font-size: 30px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.9);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 1000;
+      overflow-y: auto;
+    }
+
+    .modal.active {
+      display: flex;
+    }
+
+    .modal-content {
+      background: #2a2a2a;
+      padding: 20px;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 400px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .modal-title {
+      font-size: 20px;
+      margin-bottom: 20px;
+      font-weight: 600;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 10px;
+      background: #1a1a1a;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 16px;
+    }
+
+    .icon-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+
+    .icon-btn {
+      padding: 10px;
+      background: #1a1a1a;
+      border: 2px solid transparent;
+      border-radius: 6px;
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    .icon-btn.selected {
+      border-color: #4CAF50;
+    }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+
+    .color-btn {
+      height: 40px;
+      border: 3px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .color-btn.selected {
+      border-color: white;
+    }
+
+    .freq-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .freq-option {
+      padding: 12px;
+      background: #1a1a1a;
+      border: 2px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .freq-option.selected {
+      border-color: #4CAF50;
+    }
+
+    .freq-details {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .freq-details input,
+    .freq-details select {
+      width: auto;
+      min-width: 70px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .btn-primary,
+    .btn-secondary {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn-primary {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .btn-secondary {
+      background: #3a3a3a;
+      color: white;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: #888;
+      margin-top: 50px;
+    }
+
+    .calendar {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 10px;
+    }
+
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .calendar-nav {
+      background: #3a3a3a;
+      border: none;
+      color: white;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .calendar-month {
+      font-weight: 600;
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+    }
+
+    .calendar-day-header {
+      text-align: center;
+      font-size: 11px;
+      color: #888;
+      padding: 8px 0;
+      font-weight: 600;
+    }
+
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1a1a1a;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .calendar-day.other-month {
+      color: #555;
+    }
+
+    .calendar-day.today {
+      border: 2px solid #4CAF50;
+    }
+
+    .calendar-day.future {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .calendar-day.completed::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      width: 4px;
+      height: 4px;
+      background: #4CAF50;
+      border-radius: 50%;
+    }
+
+    .habit-selector {
+      margin-bottom: 15px;
+    }
+
+    .stats-card {
+      background: #2a2a2a;
+      padding: 16px;
+      border-radius: 10px;
+      margin-bottom: 15px;
+      border-left: 4px solid;
+    }
+
+    .stats-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .stats-title {
+      flex: 1;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .stats-numbers {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .stat-box {
+      background: #1a1a1a;
+      padding: 12px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .stat-box-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #4CAF50;
+      margin-bottom: 4px;
+    }
+
+    .stat-box-label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart {
+      margin-top: 16px;
+    }
+
+    .chart-title {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart-bars {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      height: 80px;
+      gap: 3px;
+    }
+
+    .chart-bar-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      height: 100%;
+    }
+
+    .chart-bar {
+      width: 100%;
+      border-radius: 3px 3px 0 0;
+      min-height: 2px;
+      transition: all 0.3s;
+    }
+
+    .chart-label {
+      font-size: 9px;
+      color: #888;
+      margin-top: 5px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>📊 Mis Hábitos</h1>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active">Hoy</button>
+    <button class="tab">Calendario</button>
+    <button class="tab">Estadísticas</button>
+  </div>
+
+  <div id="todayView" class="view active"></div>
+
+  <div id="calendarView" class="view">
+    <div class="habit-selector">
+      <select id="calendarHabitSelect"></select>
+    </div>
+    <div class="calendar">
+      <div class="calendar-header">
+        <button class="calendar-nav" id="prevMonth">◀</button>
+        <span class="calendar-month" id="currentMonth"></span>
+        <button class="calendar-nav" id="nextMonth">▶</button>
+      </div>
+      <div class="calendar-grid" id="calendarGrid"></div>
+    </div>
+  </div>
+
+  <div id="statsView" class="view"></div>
+
+  <button class="add-btn" id="addBtn">+</button>
+
+  <div id="modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-title" id="modalTitle">Nuevo Hábito</div>
+
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" id="habitName" placeholder="Ej: Meditar" />
+      </div>
+
+      <div class="form-group">
+        <label>Icono</label>
+        <div class="icon-grid" id="iconGrid"></div>
+      </div>
+
+      <div class="form-group">
+        <label>Color</label>
+        <div class="color-grid" id="colorGrid"></div>
+      </div>
+
+      <div class="form-group">
+        <label>Frecuencia</label>
+        <div class="freq-options" id="freqOptions"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" id="cancelBtn">Cancelar</button>
+        <button class="btn-primary" id="saveBtn">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ICONS = ['🧘', '💪', '🏃', '📚', '✍️', '🥗', '💧', '😴', '🎨', '🎵', '🧹', '💼'];
+    const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788'];
+
+    let state = {
+      habits: [],
+      completions: {},
+      selectedIcon: ICONS[0],
+      selectedColor: COLORS[0],
+      selectedFreq: 'daily',
+      freqCount: 7,
+      freqPeriod: 'week',
+      currentMonth: new Date(),
+      editingId: null,
+      currentView: 'today'
+    };
+
+    function toLocalDateStr(date = new Date()) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    function getToday() {
+      return toLocalDateStr(new Date());
+    }
+
+    function init() {
+      loadData();
+      setupEvents();
+      render();
+    }
+
+    function loadData() {
+      const h = localStorage.getItem('habits');
+      const c = localStorage.getItem('completions');
+      if (h) state.habits = JSON.parse(h);
+      if (c) state.completions = JSON.parse(c);
+
+      state.habits = state.habits.map(hb => ({
+        freq: 'daily',
+        freqCount: 7,
+        freqPeriod: 'week',
+        ...hb
+      }));
+    }
+
+    function saveData() {
+      localStorage.setItem('habits', JSON.stringify(state.habits));
+      localStorage.setItem('completions', JSON.stringify(state.completions));
+    }
+
+    function setupEvents() {
+      document.getElementById('addBtn').onclick = openModal;
+      document.getElementById('cancelBtn').onclick = closeModal;
+      document.getElementById('saveBtn').onclick = saveHabit;
+
+      document.getElementById('prevMonth').onclick = () => {
+        state.currentMonth.setMonth(state.currentMonth.getMonth() - 1);
+        renderCalendar();
+      };
+      document.getElementById('nextMonth').onclick = () => {
+        state.currentMonth.setMonth(state.currentMonth.getMonth() + 1);
+        renderCalendar();
+      };
+
+      document.getElementById('calendarHabitSelect').onchange = renderCalendar;
+
+      const tabs = document.querySelectorAll('.tab');
+      tabs.forEach((tab, i) => {
+        tab.onclick = () => {
+          tabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+          const views = ['todayView', 'calendarView', 'statsView'];
+          document.getElementById(views[i]).classList.add('active');
+          state.currentView = ['today', 'calendar', 'stats'][i];
+          if (state.currentView === 'calendar') renderCalendar();
+          if (state.currentView === 'stats') renderStats();
+        };
+      });
+    }
+
+    function getFreqText(habit) {
+      if (habit.freq === 'daily') return 'Todos los días';
+      if (habit.freq === 'custom') {
+        const period = habit.freqPeriod === 'week' ? 'semana' : 'mes';
+        return `${habit.freqCount} veces por ${period}`;
+      }
+      return '';
+    }
+
+    function render() {
+      renderHabits();
+      updateCalendarSelect();
+      if (state.currentView === 'calendar') renderCalendar();
+      if (state.currentView === 'stats') renderStats();
+    }
+
+    function renderHabits() {
+      const container = document.getElementById('todayView');
+      const today = getToday();
+
+      if (state.habits.length === 0) {
+        container.innerHTML = '<div class="empty-state">No tienes hábitos.<br>Presiona + para agregar uno.</div>';
+        return;
+      }
+
+      container.innerHTML = state.habits.map(habit => {
+        const isCompleted = state.completions[today]?.[habit.id] || false;
+        const stats = calculateStats(habit);
+
+        return `
+          <div class="habit-card" style="border-left-color: ${habit.color}">
+            <div class="habit-header">
+              <span class="habit-icon">${habit.icon}</span>
+              <div class="habit-info">
+                <div class="habit-name">${habit.name}</div>
+                <div class="habit-freq">${getFreqText(habit)}</div>
+              </div>
+              <button class="btn btn-check ${isCompleted ? 'completed' : ''}" data-action="toggle" data-id="${habit.id}" data-date="${today}">
+                ${isCompleted ? '✓' : '○'}
+              </button>
+              <button class="btn btn-edit" data-action="edit" data-id="${habit.id}">✏️</button>
+              <button class="btn btn-delete" data-action="delete" data-id="${habit.id}">🗑️</button>
+            </div>
+            <div class="stats">
+              <div class="stat">
+                <div class="stat-label">Tasa éxito</div>
+                <div class="stat-value">${stats.successRate}%</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Racha</div>
+                <div class="stat-value">${stats.currentStreak}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Mejor racha</div>
+                <div class="stat-value">${stats.bestStreak}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Total</div>
+                <div class="stat-value">${stats.totalCompleted}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      container.querySelectorAll('[data-action]').forEach(btn => {
+        btn.onclick = (e) => {
+          const action = e.currentTarget.dataset.action;
+          const id = e.currentTarget.dataset.id;
+          if (action === 'toggle') toggleHabit(id, e.currentTarget.dataset.date);
+          if (action === 'edit') editHabit(id);
+          if (action === 'delete') deleteHabit(id);
+        };
+      });
+    }
+    function calculateStats(habit) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      let totalDays = 0;
+      let completedDays = 0;
+      let currentStreak = 0;
+      let bestStreak = 0;
+      let tempStreak = 0;
+
+      // Últimos 90 días para calcular estadísticas
+      for (let i = 0; i < 90; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const ds = toLocalDateStr(d);
+
+        // Solo contar días donde el hábito aplica según frecuencia
+        if (shouldTrackOnDate(habit, d)) {
+          totalDays++;
+          const completed = state.completions[ds]?.[habit.id] || false;
+
+          if (completed) {
+            completedDays++;
+            tempStreak++;
+            // Solo cuenta para racha actual si es consecutivo desde hoy
+            if (i === 0 || currentStreak > 0) {
+              currentStreak++;
+            }
+          } else {
+            tempStreak = 0;
+            if (i === 0) currentStreak = 0;
+          }
+
+          bestStreak = Math.max(bestStreak, tempStreak);
+        }
+      }
+
+      return {
+        successRate: totalDays > 0 ? Math.round((completedDays / totalDays) * 100) : 0,
+        currentStreak,
+        bestStreak,
+        totalCompleted: completedDays
+      };
+    }
+
+    function shouldTrackOnDate(habit, date) {
+      if (habit.freq === 'daily') return true;
+      if (habit.freq === 'custom') return true;
+      return true;
+    }
+
+    function toggleHabit(id, date) {
+      if (!state.completions[date]) state.completions[date] = {};
+      state.completions[date][id] = !state.completions[date][id];
+      saveData();
+      render();
+    }
+
+    function deleteHabit(id) {
+      if (!confirm('¿Eliminar este hábito?')) return;
+      state.habits = state.habits.filter(h => h.id !== id);
+
+      for (const day in state.completions) {
+        if (state.completions[day] && typeof state.completions[day] === 'object') {
+          delete state.completions[day][id];
+        }
+      }
+
+      saveData();
+      render();
+    }
+
+    function editHabit(id) {
+      const habit = state.habits.find(h => h.id === id);
+      if (!habit) return;
+
+      state.editingId = id;
+      document.getElementById('modalTitle').textContent = 'Editar Hábito';
+      document.getElementById('habitName').value = habit.name;
+      state.selectedIcon = habit.icon;
+      state.selectedColor = habit.color;
+      state.selectedFreq = habit.freq;
+      state.freqCount = habit.freqCount || 7;
+      state.freqPeriod = habit.freqPeriod || 'week';
+
+      renderModalContent();
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function openModal() {
+      state.editingId = null;
+      document.getElementById('modalTitle').textContent = 'Nuevo Hábito';
+      document.getElementById('habitName').value = '';
+      state.selectedIcon = ICONS[0];
+      state.selectedColor = COLORS[0];
+      state.selectedFreq = 'daily';
+      state.freqCount = 7;
+      state.freqPeriod = 'week';
+
+      renderModalContent();
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function renderModalContent() {
+      document.getElementById('iconGrid').innerHTML = ICONS.map(icon =>
+        `<button type="button" class="icon-btn ${icon === state.selectedIcon ? 'selected' : ''}" data-icon="${icon}">${icon}</button>`
+      ).join('');
+
+      document.querySelectorAll('.icon-btn').forEach(btn => {
+        btn.onclick = () => {
+          state.selectedIcon = btn.dataset.icon;
+          renderModalContent();
+        };
+      });
+
+      document.getElementById('colorGrid').innerHTML = COLORS.map(color =>
+        `<button type="button" class="color-btn ${color === state.selectedColor ? 'selected' : ''}" style="background: ${color}" data-color="${color}"></button>`
+      ).join('');
+
+      document.querySelectorAll('.color-btn').forEach(btn => {
+        btn.onclick = () => {
+          state.selectedColor = btn.dataset.color;
+          renderModalContent();
+        };
+      });
+
+      document.getElementById('freqOptions').innerHTML = `
+<div class="freq-option ${state.selectedFreq === 'daily' ? 'selected' : ''}" data-freq="daily">
+<strong>Todos los días</strong>
+</div>
+<div class="freq-option ${state.selectedFreq === 'custom' ? 'selected' : ''}" data-freq="custom">
+<strong>Personalizado</strong>
+${state.selectedFreq === 'custom' ? `
+<div class="freq-details">
+<input type="number" min="1" max="30" value="${state.freqCount}" id="freqCountInput">
+<span>veces por</span>
+<select id="freqPeriodInput">
+<option value="week" ${state.freqPeriod === 'week' ? 'selected' : ''}>semana</option>
+<option value="month" ${state.freqPeriod === 'month' ? 'selected' : ''}>mes</option>
+</select>
+</div>
+` : ''}
+</div>
+`;
+
+      document.querySelectorAll('.freq-option').forEach(opt => {
+        opt.onclick = () => {
+          state.selectedFreq = opt.dataset.freq;
+          renderModalContent();
+        };
+      });
+
+      if (state.selectedFreq === 'custom') {
+        document.getElementById('freqCountInput').onchange = (e) => {
+          state.freqCount = parseInt(e.target.value || '1', 10);
+        };
+        document.getElementById('freqPeriodInput').onchange = (e) => {
+          state.freqPeriod = e.target.value;
+        };
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+    }
+
+    function saveHabit() {
+      const name = document.getElementById('habitName').value.trim();
+      if (!name) { alert('Ingresa un nombre'); return; }
+
+      const habit = {
+        id: state.editingId || Date.now().toString(),
+        name,
+        icon: state.selectedIcon,
+        color: state.selectedColor,
+        freq: state.selectedFreq,
+        freqCount: state.freqCount,
+        freqPeriod: state.freqPeriod
+      };
+
+      if (state.editingId) {
+        const index = state.habits.findIndex(h => h.id === state.editingId);
+        state.habits[index] = habit;
+      } else {
+        state.habits.push(habit);
+      }
+
+      saveData();
+      closeModal();
+      render();
+    }
+
+    function updateCalendarSelect() {
+      const select = document.getElementById('calendarHabitSelect');
+      const prev = select.value;
+
+      if (state.habits.length === 0) {
+        select.innerHTML = '';
+        return;
+      }
+
+      select.innerHTML = state.habits.map(h =>
+        `<option value="${h.id}">${h.icon} ${h.name}</option>`
+      ).join('');
+
+      if (prev && state.habits.some(h => h.id === prev)) {
+        select.value = prev;
+      }
+    }
+
+    function renderCalendar() {
+      const grid = document.getElementById('calendarGrid');
+
+      if (state.habits.length === 0) {
+        grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #888; padding: 20px;">Agrega un hábito primero</div>';
+        return;
+      }
+
+      const habitId = document.getElementById('calendarHabitSelect').value;
+      const year = state.currentMonth.getFullYear();
+      const month = state.currentMonth.getMonth();
+
+      const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+      document.getElementById('currentMonth').textContent = `${monthNames[month]} ${year}`;
+
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+      const startDay = firstDay.getDay();
+      const daysInMonth = lastDay.getDate();
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      let html = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+        .map(d => `<div class="calendar-day-header">${d}</div>`)
+        .join('');
+
+      const prevMonth = new Date(year, month, 0);
+      const prevMonthDays = prevMonth.getDate();
+
+      for (let i = startDay - 1; i >= 0; i--) {
+        const day = prevMonthDays - i;
+        const date = new Date(year, month - 1, day);
+        const dateStr = toLocalDateStr(date);
+        const isCompleted = state.completions[dateStr]?.[habitId];
+        const isFuture = date > today;
+
+        html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+      }
+
+      for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month, day);
+        const dateStr = toLocalDateStr(date);
+        const isCompleted = state.completions[dateStr]?.[habitId];
+        const isToday = date.getTime() === today.getTime();
+        const isFuture = date > today;
+
+        html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
+data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+      }
+
+      const remainingDays = 42 - (startDay + daysInMonth);
+      for (let day = 1; day <= remainingDays; day++) {
+        const date = new Date(year, month + 1, day);
+        const dateStr = toLocalDateStr(date);
+        const isCompleted = state.completions[dateStr]?.[habitId];
+        const isFuture = date > today;
+
+        html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
+data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+      }
+
+      grid.innerHTML = html;
+
+      document.querySelectorAll('.calendar-day').forEach(cell => {
+        cell.onclick = () => {
+          if (cell.dataset.future === 'true') return;
+          const dateStr = cell.dataset.date;
+          const hid = cell.dataset.habit;
+          if (!state.completions[dateStr]) state.completions[dateStr] = {};
+          state.completions[dateStr][hid] = !state.completions[dateStr][hid];
+          saveData();
+          renderCalendar();
+          renderHabits();
+          renderStats();
+        };
+      });
+    }
+
+    function renderStats() {
+      const container = document.getElementById('statsView');
+
+      if (state.habits.length === 0) {
+        container.innerHTML = '<div class="empty-state">Agrega hábitos para ver estadísticas</div>';
+        return;
+      }
+
+      container.innerHTML = state.habits.map(habit => {
+        const stats = calculateStats(habit);
+        const last7Days = [];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(today);
+          d.setDate(d.getDate() - i);
+          const dateStr = toLocalDateStr(d);
+          const dayName = ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()];
+          last7Days.push({
+            label: dayName,
+            value: state.completions[dateStr]?.[habit.id] ? 1 : 0
+          });
+        }
+
+        const barsHtml = last7Days.map(day => `
+<div class="chart-bar-wrapper">
+<div class="chart-bar" style="height: ${day.value * 100}%; background: ${habit.color};"></div>
+<div class="chart-label">${day.label}</div>
+</div>
+`).join('');
+
+        return `
+<div class="stats-card" style="border-left-color: ${habit.color}">
+<div class="stats-header">
+<span class="habit-icon">${habit.icon}</span>
+<span class="stats-title">${habit.name}</span>
+</div>
+
+<div class="stats-numbers">
+<div class="stat-box">
+<div class="stat-box-value">${stats.successRate}%</div>
+<div class="stat-box-label">Tasa de éxito</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.currentStreak}</div>
+<div class="stat-box-label">Racha actual</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.bestStreak}</div>
+<div class="stat-box-label">Mejor racha</div>
+</div>
+<div class="stat-box">
+<div class="stat-box-value">${stats.totalCompleted}</div>
+<div class="stat-box-label">Total completados</div>
+</div>
+</div>
+
+<div class="chart">
+<div class="chart-title">Últimos 7 días</div>
+<div class="chart-bars">
+${barsHtml}
+</div>
+</div>
+</div>
+`;
+      }).join('');
+    }
+
+    init();
+  </script>
+</body>
+
+</html>
