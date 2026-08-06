@@ -1,5 +1,13 @@
-# Backups personales
-*.db
-Loop Habits Backup*
-habits-export.json
-habitos-loop.json
+# Backups y exports personales — nunca commitear datos reales del usuario 
+*.db 
+*.sqlite 
+*.sqlite3 
+Loop Habits Backup* 
+habits-export.json 
+habitos-loop.json 
+*-export.json 
+*.export.json 
+/exports/ 
+/backups/ 
+# Configuración local de Claude Code 
+.claude/settings.local.json
