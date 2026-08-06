@@ -1,0 +1,5 @@
+# Backups personales
+*.db
+Loop Habits Backup*
+habits-export.json
+habitos-loop.json
