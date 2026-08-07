@@ -49,7 +49,7 @@ Las tres ramas devuelven `true`. Esto significa que un hábito configurado como 
 - `currentStreak` / `bestStreak` se rompen con cualquier día no marcado, aunque el usuario esté cumpliendo su objetivo semanal/mensual.
 - La UI ya guarda `freqCount` y `freqPeriod`, pero **ningún cálculo los usa**. Es la causa raíz pedida a corregir en el punto 6 del pedido original.
 
-> **Resuelto (decisión de producto, ver sección 8.1):** diario se calcula por días, "N veces por semana" por semanas completas, "N veces por mes" por meses completos. No se infieren días obligatorios dentro del período.
+> **Resuelto (decisión de producto, ver sección 7.1):** diario se calcula por días, "N veces por semana" por semanas completas, "N veces por mes" por meses completos. No se infieren días obligatorios dentro del período.
 
 ### 3.2 Racha actual: semántica no documentada, y acoplada al bug anterior
 ```js
@@ -65,7 +65,7 @@ Con `shouldTrackOnDate` arreglado, esta lógica sigue siendo puramente "días co
 
 Además, si hoy (`i === 0`) todavía no se marcó, la racha actual cae a 0 inmediatamente aunque ayer haya un streak largo activo. Es una decisión de producto razonable (muchos habit trackers lo hacen así), pero no está documentada ni es evidente — hay que decidir si se mantiene o se da margen "hasta el cierre del día".
 
-> **Resuelto (decisión de producto, ver sección 8.2):** un período abierto (hoy, para diarios; la semana o el mes en curso, para custom) nunca rompe la racha anterior hasta que ese período termine sin alcanzar el objetivo. La tasa de éxito se calcula solo con períodos ya cerrados; el período en curso se muestra aparte como progreso.
+> **Resuelto (decisión de producto, ver sección 7.2):** un período abierto (hoy, para diarios; la semana o el mes en curso, para custom) nunca rompe la racha anterior hasta que ese período termine sin alcanzar el objetivo. La tasa de éxito se calcula solo con períodos ya cerrados; el período en curso se muestra aparte como progreso.
 
 ### 3.3 Ventana fija de 90 días en `calculateStats()`
 Solo se analizan los últimos 90 días. Si un hábito tiene más de 90 días de antigüedad, `bestStreak` puede subestimarse si la mejor racha histórica ocurrió antes de ese corte. No es incorrecto per se, pero es una limitación a documentar (y a resolver naturalmente cuando se migre a un cálculo dirigido por rango real de datos, no por ventana fija).
@@ -137,8 +137,8 @@ Cada etapa: cambios acotados, commit local al terminar, sin tocar `main`, sin pu
 1. **Auditoría** *(completa)* — este documento. Sin cambios de código funcional.
 2. **Refuerzo de `.gitignore`** *(completa)* — patrones de export (nombre variable) además de los backups ya ignorados (ítems 11/12 del pedido), antes de tocar código que genere esos archivos.
 3. **Separación de archivos (sin cambiar comportamiento)** — extraer `<style>` a `css/styles.css` y `<script>` a `js/app.js` (con submódulos mínimos), verificando que la app se comporte exactamente igual. Commit de refactor puro, cero lógica nueva.
-4. **Corrección de frecuencias y rachas** — implementar `shouldTrackOnDate`/cálculo por período según la semántica de 8.1 (días para diario, semanas/meses completos para custom), agregar `createdAt` (8.3) para que ninguna estadística cuente antes de la creación del hábito, aplicar la regla de "período abierto no rompe racha" (8.2), y agregar manejo de errores en `loadData`. Es el cambio de lógica más delicado — se hace aislado del resto.
-5. **Exportar / Importar JSON** — export: botón que descarga un `.json` (habits + completions + `createdAt` + versión de esquema) pensado para que el usuario lo guarde/comparta manualmente (p. ej. a Google Drive desde el iPhone vía el share sheet de iOS) — sin OAuth, sin API de Google, sin sincronización automática (8.4). Import: validación estricta de esquema (8.5) y flujo con vista previa, elección reemplazar/fusionar, detección de duplicados y backup automático antes de sobrescribir (8.6).
+4. **Corrección de frecuencias y rachas** — implementar `shouldTrackOnDate`/cálculo por período según la semántica de 7.1 (días para diario, semanas/meses completos para custom), agregar `createdAt` (7.3) para que ninguna estadística cuente antes de la creación del hábito, aplicar la regla de "período abierto no rompe racha" (7.2), y agregar manejo de errores en `loadData`. Es el cambio de lógica más delicado — se hace aislado del resto.
+5. **Exportar / Importar JSON** — export: botón que descarga un `.json` (habits + completions + `createdAt` + versión de esquema) pensado para que el usuario lo guarde/comparta manualmente (p. ej. a Google Drive desde el iPhone vía el share sheet de iOS) — sin OAuth, sin API de Google, sin sincronización automática (7.4). Import: validación estricta de esquema (7.5) y flujo con vista previa, elección reemplazar/fusionar, detección de duplicados y backup automático antes de sobrescribir (7.6).
 6. **IndexedDB + migración automática** — capa `storage.js` con IndexedDB como almacenamiento primario y migración de `localStorage` → IndexedDB al iniciar, sin borrar `localStorage` automáticamente (se conserva como respaldo pasivo).
 7. **PWA** — `manifest.json`, `service-worker.js` (cache de app shell, funcionamiento offline), íconos iOS (`apple-touch-icon`, `apple-mobile-web-app-*`), verificación de instalación.
 8. **Script Python conversor de Loop Habit Tracker** — `tools/loop_habits_to_json.py`, standalone (sin tocar la app web), lee un SQLite de Loop Habit Tracker (esquema `Habits`/`Repetitions`) y genera un JSON compatible con el importador de la etapa 5. Sin dependencias externas (solo `sqlite3` de stdlib).
@@ -147,41 +147,41 @@ Cada etapa: cambios acotados, commit local al terminar, sin tocar `main`, sin pu
 
 Cada etapa termina con: archivos modificados, decisiones tomadas, pruebas ejecutadas, pendientes y el commit local correspondiente, tal como se pidió.
 
-## 8. Decisiones de producto confirmadas (2026-08-06)
+## 7. Decisiones de producto confirmadas (2026-08-06)
 
 Estas decisiones fijan la semántica antes de tocar `calculateStats`/`shouldTrackOnDate` (etapa 4) y el flujo de import/export (etapa 5). No son inferencias del auditor: fueron definidas explícitamente por el usuario.
 
-### 8.1 Semántica de frecuencia por tipo de período
+### 7.1 Semántica de frecuencia por tipo de período
 - **Diario**: estadísticas y racha calculadas por día (comportamiento actual, sin cambios de unidad).
 - **N veces por semana**: cumplimiento y racha calculados por **semana completa** — se evalúa si el hábito llegó a `freqCount` completions dentro de la semana, no día a día.
 - **N veces por mes**: cumplimiento y racha calculados por **mes completo**, misma lógica a nivel mensual.
 - **No se asignan días obligatorios automáticamente** dentro del período (p. ej. "3 veces por semana" no se traduce a "lunes, miércoles, viernes"). El usuario elige libremente qué días cumple, mientras llegue al total del período.
 
-### 8.2 Períodos abiertos no cuentan como fallidos
+### 7.2 Períodos abiertos no cuentan como fallidos
 - Un hábito diario pendiente **hoy** no rompe la racha anterior hasta que el día termine.
 - Una semana o mes en curso no rompe la racha hasta que el período haya cerrado sin alcanzar el objetivo.
 - La **tasa de éxito** se calcula solo con períodos ya cerrados (días pasados completos / semanas pasadas completas / meses pasados completos, según el tipo de hábito).
 - El progreso del período actual (p. ej. "2 de 3 esta semana") se muestra **aparte**, no mezclado en la tasa de éxito ni usado para romper la racha.
 
-### 8.3 `createdAt` por hábito
+### 7.3 `createdAt` por hábito
 - Cada hábito incorpora `createdAt` (fecha de creación). Ninguna estadística (tasa de éxito, racha, totales) debe contar fechas anteriores a esa fecha.
 - Para hábitos ya existentes en `localStorage` (sin `createdAt`) o importados desde el conversor de Loop Habit Tracker, la fecha se infiere durante la migración a partir de su **primera repetición disponible**; si no hay ninguna repetición, se define en el momento de la migración/import.
 
-### 8.4 Backups: primera versión es export JSON manual (sin nube)
+### 7.4 Backups: primera versión es export JSON manual (sin nube)
 - El export es un archivo `.json` descargado localmente. El usuario lo guarda o comparte a mano (p. ej. a Google Drive desde el share sheet de iOS).
 - **Explícitamente fuera de alcance**: autenticación de Google, OAuth, cualquier API externa o sincronización automática. Si en el futuro se quiere subir automáticamente, es una decisión aparte y posterior.
 
-### 8.5 Validación estricta en la importación
+### 7.5 Validación estricta en la importación
 - Antes de aceptar un JSON importado: validar esquema, tipos de cada campo, tamaños razonables (longitud de nombre, cantidad de hábitos/registros) y valores permitidos (`freq` en el set conocido, colores/íconos válidos, fechas con formato correcto).
 - **Nunca insertar datos importados vía `innerHTML`.** Nombres de hábitos y cualquier texto proveniente del JSON importado se insertan con `textContent`, creación segura de nodos (`createElement` + asignar propiedades), o pasando por una función de escape — para evitar XSS a través de un JSON importado manipulado.
 
-### 8.6 Flujo de importación con vista previa
+### 7.6 Flujo de importación con vista previa
 - Antes de aplicar la importación, mostrar una vista previa: cantidad de hábitos y cantidad de registros (completions) detectados en el archivo.
 - Ofrecer explícitamente **reemplazar** todo o **fusionar** con los datos actuales.
 - Detectar duplicados (mismo hábito ya existente) antes de fusionar.
 - Crear automáticamente un backup (export local) de los datos actuales **antes** de sobrescribir, para poder deshacer.
 
-## 9. Restricciones confirmadas para todo el trabajo
+## 8. Restricciones confirmadas para todo el trabajo
 
 - Sin backend, sin cuentas/login, sin servicios pagos ni externos.
 - Sin `git push`, sin tocar `main`, sin comandos destructivos (`reset --hard`, `clean`, etc.).
