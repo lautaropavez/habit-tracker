@@ -25,17 +25,112 @@ function getToday() {
   return toLocalDateStr(new Date());
 }
 
+function parseLocalDate(dateStr) {
+  if (typeof dateStr !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) return null;
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  const date = new Date(y, m - 1, d);
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function isValidDateStr(dateStr) {
+  return parseLocalDate(dateStr) !== null;
+}
+
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+function getWeekStart(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay(); // 0=domingo .. 6=sábado
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  return addDays(d, -diffToMonday);
+}
+
+function getWeekEnd(date) {
+  return addDays(getWeekStart(date), 6);
+}
+
+function getMonthStart(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function getMonthEnd(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+// Determina la clave/rango/objetivo del período (día, semana o mes) al que
+// pertenece `date`, según la frecuencia del hábito. Diario = 1 día = objetivo 1.
+function getPeriodRange(habit, date) {
+  if (habit.freq === 'custom' && habit.freqPeriod === 'week') {
+    return { start: getWeekStart(date), end: getWeekEnd(date) };
+  }
+  if (habit.freq === 'custom' && habit.freqPeriod === 'month') {
+    return { start: getMonthStart(date), end: getMonthEnd(date) };
+  }
+  return { start: date, end: date };
+}
+
+function getPeriodKey(habit, date) {
+  const { start } = getPeriodRange(habit, date);
+  if (habit.freq === 'custom' && habit.freqPeriod === 'month') {
+    return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}`;
+  }
+  return toLocalDateStr(start);
+}
+
+function getPeriodTarget(habit) {
+  if (habit.freq === 'custom') return Math.max(1, Number(habit.freqCount) || 1);
+  return 1;
+}
+
 function init() {
   loadData();
   setupEvents();
   render();
 }
 
+// Para hábitos migrados sin createdAt: usa la fecha de su primera
+// completion marcada como true; si no tiene ninguna, usa hoy.
+function inferCreatedAt(habitId, todayStr) {
+  let earliest = null;
+  for (const dateKey in state.completions) {
+    if (!isValidDateStr(dateKey)) continue;
+    const entry = state.completions[dateKey];
+    if (entry && entry[habitId] === true) {
+      if (earliest === null || dateKey < earliest) earliest = dateKey;
+    }
+  }
+  return earliest || todayStr;
+}
+
 function loadData() {
   const h = localStorage.getItem('habits');
+  if (h) {
+    try {
+      state.habits = JSON.parse(h);
+    } catch (e) {
+      state.habits = [];
+    }
+  }
+
   const c = localStorage.getItem('completions');
-  if (h) state.habits = JSON.parse(h);
-  if (c) state.completions = JSON.parse(c);
+  if (c) {
+    try {
+      state.completions = JSON.parse(c);
+    } catch (e) {
+      state.completions = {};
+    }
+  }
 
   state.habits = state.habits.map(hb => ({
     freq: 'daily',
@@ -43,6 +138,15 @@ function loadData() {
     freqPeriod: 'week',
     ...hb
   }));
+
+  const todayStr = getToday();
+  let migrated = false;
+  state.habits = state.habits.map(hb => {
+    if (isValidDateStr(hb.createdAt)) return hb;
+    migrated = true;
+    return { ...hb, createdAt: inferCreatedAt(hb.id, todayStr) };
+  });
+  if (migrated) saveData();
 }
 
 function saveData() {
@@ -90,6 +194,15 @@ function getFreqText(habit) {
   return '';
 }
 
+// Progreso del período actual (abierto) para hábitos con frecuencia
+// personalizada, ej. "2 de 3 esta semana". Los diarios no lo necesitan:
+// el check de "Hoy" ya muestra su estado del día.
+function getPeriodProgressText(habit, stats) {
+  if (habit.freq !== 'custom' || !stats.currentPeriod) return '';
+  const period = habit.freqPeriod === 'week' ? 'esta semana' : 'este mes';
+  return ` · ${stats.currentPeriod.count} de ${stats.currentPeriod.target} ${period}`;
+}
+
 function render() {
   renderHabits();
   updateCalendarSelect();
@@ -116,7 +229,7 @@ function renderHabits() {
           <span class="habit-icon">${habit.icon}</span>
           <div class="habit-info">
             <div class="habit-name">${habit.name}</div>
-            <div class="habit-freq">${getFreqText(habit)}</div>
+            <div class="habit-freq">${getFreqText(habit)}${getPeriodProgressText(habit, stats)}</div>
           </div>
           <button class="btn btn-check ${isCompleted ? 'completed' : ''}" data-action="toggle" data-id="${habit.id}" data-date="${today}">
             ${isCompleted ? '✓' : '○'}
@@ -156,55 +269,100 @@ function renderHabits() {
     };
   });
 }
+// Para hábitos con frecuencia personalizada creados a mitad de una semana/mes,
+// ese primer período está incompleto por construcción (menos días disponibles
+// que el resto) y no debe poder contar como fallido ni como cumplido. El
+// seguimiento por períodos arranca en el primer período completo posterior
+// a createdAt. Para hábitos diarios no existe esta noción: cada día ya es un
+// período completo, así que se cuenta desde createdAt sin ajuste.
+function getFirstFullPeriodStart(habit, createdAtDate) {
+  if (habit.freq !== 'custom') return createdAtDate;
+  const { start, end } = getPeriodRange(habit, createdAtDate);
+  if (start.getTime() === createdAtDate.getTime()) return createdAtDate;
+  return addDays(end, 1);
+}
+
+// Calcula estadísticas agrupando por período (día para hábitos diarios,
+// semana de lunes a domingo o mes calendario para hábitos personalizados).
+// Nunca cuenta antes de habit.createdAt ni después de hoy. El período
+// actual (todavía abierto) nunca rompe la racha ni cuenta en la tasa de
+// éxito; su progreso se devuelve aparte en `currentPeriod`. El primer
+// período parcial (si createdAt cae a mitad de semana/mes) queda fuera del
+// cálculo de racha/tasa de éxito -nunca cuenta como cumplido ni fallido-,
+// pero sus completions sí suman al total, y su progreso también se muestra
+// en `currentPeriod` mientras ese período parcial siga en curso.
 function calculateStats(habit) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  let totalDays = 0;
-  let completedDays = 0;
-  let currentStreak = 0;
-  let bestStreak = 0;
-  let tempStreak = 0;
+  let createdAtDate = parseLocalDate(habit.createdAt) || today;
+  if (createdAtDate > today) createdAtDate = today;
 
-  // Últimos 90 días para calcular estadísticas
-  for (let i = 0; i < 90; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const ds = toLocalDateStr(d);
+  const target = getPeriodTarget(habit);
 
-    // Solo contar días donde el hábito aplica según frecuencia
-    if (shouldTrackOnDate(habit, d)) {
-      totalDays++;
-      const completed = state.completions[ds]?.[habit.id] || false;
+  let totalCompleted = 0;
+  for (let d = new Date(createdAtDate); d <= today; d = addDays(d, 1)) {
+    if (state.completions[toLocalDateStr(d)]?.[habit.id] === true) totalCompleted++;
+  }
 
-      if (completed) {
-        completedDays++;
-        tempStreak++;
-        // Solo cuenta para racha actual si es consecutivo desde hoy
-        if (i === 0 || currentStreak > 0) {
-          currentStreak++;
-        }
-      } else {
-        tempStreak = 0;
-        if (i === 0) currentStreak = 0;
+  const periodsStart = getFirstFullPeriodStart(habit, createdAtDate);
+  const periodOrder = [];
+  const periodsByKey = new Map();
+
+  if (periodsStart <= today) {
+    for (let d = new Date(periodsStart); d <= today; d = addDays(d, 1)) {
+      const ds = toLocalDateStr(d);
+      const completed = state.completions[ds]?.[habit.id] === true;
+
+      const key = getPeriodKey(habit, d);
+      if (!periodsByKey.has(key)) {
+        const { start, end } = getPeriodRange(habit, d);
+        periodsByKey.set(key, { start, end, count: 0 });
+        periodOrder.push(key);
       }
-
-      bestStreak = Math.max(bestStreak, tempStreak);
+      if (completed) periodsByKey.get(key).count++;
     }
   }
 
+  const periods = periodOrder.map(key => {
+    const p = periodsByKey.get(key);
+    return { ...p, met: p.count >= target, closed: p.end < today };
+  });
+
+  const closedPeriods = periods.filter(p => p.closed);
+  const successRate = closedPeriods.length
+    ? Math.round((closedPeriods.filter(p => p.met).length / closedPeriods.length) * 100)
+    : 0;
+
+  let tempStreak = 0;
+  let bestStreak = 0;
+  closedPeriods.forEach(p => {
+    tempStreak = p.met ? tempStreak + 1 : 0;
+    bestStreak = Math.max(bestStreak, tempStreak);
+  });
+
+  let currentStreak = tempStreak;
+  const currentPeriod = periods.length ? periods[periods.length - 1] : null;
+  const currentPeriodOpen = currentPeriod ? !currentPeriod.closed : false;
+  if (currentPeriodOpen && currentPeriod.met) {
+    currentStreak += 1;
+    bestStreak = Math.max(bestStreak, currentStreak);
+  }
+
+  // Progreso del primer período parcial (createdAt cae a mitad de semana/mes):
+  // no forma parte de `periods`, así que nunca se evalúa como cumplido/fallido
+  // ni afecta racha o tasa de éxito, pero se expone igual para mostrar "X de Y"
+  // mientras ese período parcial sigue en curso (equivale al total acumulado,
+  // ya que todavía no pasó ningún período completo).
+  const partialPeriodProgress = periodsStart > today ? { count: totalCompleted, target } : null;
+
   return {
-    successRate: totalDays > 0 ? Math.round((completedDays / totalDays) * 100) : 0,
+    successRate,
     currentStreak,
     bestStreak,
-    totalCompleted: completedDays
+    totalCompleted,
+    currentPeriod: currentPeriodOpen ? { count: currentPeriod.count, target } : partialPeriodProgress
   };
-}
-
-function shouldTrackOnDate(habit, date) {
-  if (habit.freq === 'daily') return true;
-  if (habit.freq === 'custom') return true;
-  return true;
 }
 
 function toggleHabit(id, date) {
@@ -326,6 +484,8 @@ function saveHabit() {
   const name = document.getElementById('habitName').value.trim();
   if (!name) { alert('Ingresa un nombre'); return; }
 
+  const existing = state.editingId ? state.habits.find(h => h.id === state.editingId) : null;
+
   const habit = {
     id: state.editingId || Date.now().toString(),
     name,
@@ -333,7 +493,8 @@ function saveHabit() {
     color: state.selectedColor,
     freq: state.selectedFreq,
     freqCount: state.freqCount,
-    freqPeriod: state.freqPeriod
+    freqPeriod: state.freqPeriod,
+    createdAt: existing ? existing.createdAt : getToday()
   };
 
   if (state.editingId) {
@@ -484,6 +645,7 @@ function renderStats() {
 <span class="habit-icon">${habit.icon}</span>
 <span class="stats-title">${habit.name}</span>
 </div>
+<div class="habit-freq">${getFreqText(habit)}${getPeriodProgressText(habit, stats)}</div>
 
 <div class="stats-numbers">
 <div class="stat-box">
