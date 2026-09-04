@@ -11,7 +11,8 @@ let state = {
   freqPeriod: 'week',
   currentMonth: new Date(),
   editingId: null,
-  currentView: 'today'
+  currentView: 'today',
+  storageHealth: { habits: 'missing', completions: 'missing' }
 };
 
 function toLocalDateStr(date = new Date()) {
@@ -113,22 +114,56 @@ function inferCreatedAt(habitId, todayStr) {
   return earliest || todayStr;
 }
 
+// Verdad unica que consultan tanto los guards de mutacion como saveData():
+// true si cualquiera de las dos claves persistidas quedo marcada 'corrupt'
+// en la ultima carga real.
+function hasStorageCorruption() {
+  return state.storageHealth.habits === 'corrupt' || state.storageHealth.completions === 'corrupt';
+}
+
 function loadData() {
+  // Se reconstruye TODO desde cero en cada llamada real -- datos y salud --
+  // para que una clave hoy ausente nunca arrastre memoria de una carga
+  // anterior, y reload/loadData repetido sea deterministico.
+  state.habits = [];
+  state.completions = {};
+  state.storageHealth = { habits: 'missing', completions: 'missing' };
+
   const h = localStorage.getItem('habits');
-  if (h) {
+  if (h !== null) {
     try {
-      state.habits = JSON.parse(h);
+      const parsed = JSON.parse(h);
+      // JSON.parse exitoso no basta: la raiz debe ser Array, y cada
+      // elemento debe ser un objeto (no null, no array) -- sin validar
+      // campos internos. Evita sintetizar un "habito fantasma" a partir
+      // de un elemento invalido mezclado en un array por lo demas valido.
+      const rootIsArray = Array.isArray(parsed);
+      const elementsAreObjects = rootIsArray && parsed.every(el =>
+        typeof el === 'object' && el !== null && !Array.isArray(el)
+      );
+      if (elementsAreObjects) {
+        state.habits = parsed;
+        state.storageHealth.habits = 'valid';
+      } else {
+        state.storageHealth.habits = 'corrupt';
+      }
     } catch (e) {
-      state.habits = [];
+      state.storageHealth.habits = 'corrupt';
     }
   }
 
   const c = localStorage.getItem('completions');
-  if (c) {
+  if (c !== null) {
     try {
-      state.completions = JSON.parse(c);
+      const parsed = JSON.parse(c);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        state.completions = parsed;
+        state.storageHealth.completions = 'valid';
+      } else {
+        state.storageHealth.completions = 'corrupt';
+      }
     } catch (e) {
-      state.completions = {};
+      state.storageHealth.completions = 'corrupt';
     }
   }
 
@@ -139,19 +174,31 @@ function loadData() {
     ...hb
   }));
 
-  const todayStr = getToday();
-  let migrated = false;
-  state.habits = state.habits.map(hb => {
-    if (isValidDateStr(hb.createdAt)) return hb;
-    migrated = true;
-    return { ...hb, createdAt: inferCreatedAt(hb.id, todayStr) };
-  });
-  if (migrated) saveData();
+  // Si hay cualquier corrupcion, la migracion automatica de createdAt no
+  // corre en absoluto: no se infiere sobre un dataset que sabemos incompleto,
+  // y no se persiste nada mientras dure el modo de proteccion.
+  if (!hasStorageCorruption()) {
+    const todayStr = getToday();
+    let migrated = false;
+    state.habits = state.habits.map(hb => {
+      if (isValidDateStr(hb.createdAt)) return hb;
+      migrated = true;
+      return { ...hb, createdAt: inferCreatedAt(hb.id, todayStr) };
+    });
+    if (migrated) saveData();
+  }
 }
 
+// Capa 2 (barrera final): si hay corrupcion detectada, no escribe nada y lo
+// senala explicitamente en el resultado -- no depende de que cada caller
+// haya aplicado bien el guard de Capa 1.
 function saveData() {
+  if (hasStorageCorruption()) {
+    return { ok: false, reason: 'storage-corrupted' };
+  }
   localStorage.setItem('habits', JSON.stringify(state.habits));
   localStorage.setItem('completions', JSON.stringify(state.completions));
+  return { ok: true };
 }
 
 function setupEvents() {
@@ -203,7 +250,34 @@ function getPeriodProgressText(habit, stats) {
   return ` · ${stats.currentPeriod.count} de ${stats.currentPeriod.target} ${period}`;
 }
 
+// Banner fijo de aviso + deshabilitado del boton "+": unica fuente visible
+// del modo de proteccion, gobernada por hasStorageCorruption(). No repara
+// ni descarta nada -- solo informa y bloquea la entrada a mutaciones.
+function renderStorageWarning() {
+  const el = document.getElementById('storageWarning');
+  const addBtn = document.getElementById('addBtn');
+  const corrupted = hasStorageCorruption();
+
+  addBtn.disabled = corrupted;
+
+  if (!corrupted) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+
+  const partes = [];
+  if (state.storageHealth.habits === 'corrupt') partes.push('tus hábitos');
+  if (state.storageHealth.completions === 'corrupt') partes.push('tu historial de días completados');
+
+  el.textContent = `No se pudieron leer ${partes.join(' ni ')} guardados en este dispositivo. ` +
+    'Los datos originales no fueron sobrescritos y siguen intactos. ' +
+    'Mientras esto no se resuelva, la app queda temporalmente en modo solo lectura: no se puede crear, editar, eliminar ni marcar hábitos.';
+  el.hidden = false;
+}
+
 function render() {
+  renderStorageWarning();
   renderHabits();
   updateCalendarSelect();
   if (state.currentView === 'calendar') renderCalendar();
@@ -231,11 +305,11 @@ function renderHabits() {
             <div class="habit-name">${habit.name}</div>
             <div class="habit-freq">${getFreqText(habit)}${getPeriodProgressText(habit, stats)}</div>
           </div>
-          <button class="btn btn-check ${isCompleted ? 'completed' : ''}" data-action="toggle" data-id="${habit.id}" data-date="${today}">
+          <button class="btn btn-check ${isCompleted ? 'completed' : ''}" data-action="toggle" data-id="${habit.id}" data-date="${today}" ${hasStorageCorruption() ? 'disabled' : ''}>
             ${isCompleted ? '✓' : '○'}
           </button>
-          <button class="btn btn-edit" data-action="edit" data-id="${habit.id}">✏️</button>
-          <button class="btn btn-delete" data-action="delete" data-id="${habit.id}">🗑️</button>
+          <button class="btn btn-edit" data-action="edit" data-id="${habit.id}" ${hasStorageCorruption() ? 'disabled' : ''}>✏️</button>
+          <button class="btn btn-delete" data-action="delete" data-id="${habit.id}" ${hasStorageCorruption() ? 'disabled' : ''}>🗑️</button>
         </div>
         <div class="stats">
           <div class="stat">
@@ -366,6 +440,7 @@ function calculateStats(habit) {
 }
 
 function toggleHabit(id, date) {
+  if (hasStorageCorruption()) return;
   if (!state.completions[date]) state.completions[date] = {};
   state.completions[date][id] = !state.completions[date][id];
   saveData();
@@ -373,6 +448,7 @@ function toggleHabit(id, date) {
 }
 
 function deleteHabit(id) {
+  if (hasStorageCorruption()) return;
   if (!confirm('¿Eliminar este hábito?')) return;
   state.habits = state.habits.filter(h => h.id !== id);
 
@@ -481,6 +557,7 @@ function closeModal() {
 }
 
 function saveHabit() {
+  if (hasStorageCorruption()) return;
   const name = document.getElementById('habitName').value.trim();
   if (!name) { alert('Ingresa un nombre'); return; }
 
@@ -594,6 +671,7 @@ data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}<
 
   document.querySelectorAll('.calendar-day').forEach(cell => {
     cell.onclick = () => {
+      if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
       const dateStr = cell.dataset.date;
       const hid = cell.dataset.habit;
