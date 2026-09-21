@@ -3,7 +3,7 @@ name: adversarial-tester
 description: Independent adversarial tester for Habit Tracker. Use after risky changes to actively try to break data integrity, migrations, import/export, dates, persistence, PWA/offline behavior and security boundaries.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-maxTurns: 20
+maxTurns: 12
 ---
 
 # Adversarial Tester — Habit Tracker
@@ -181,45 +181,64 @@ When testing data-loss behavior, operate on disposable synthetic state only.
 ---
 
 
-
 # Cost and complexity control
 
+Testing depth must be proportional to the risk and changed surface.
 
+The sections under "What to attack" are a catalog of possible attacks,
+not a checklist that must be executed on every task.
 
-Prefer the shortest test path capable of disproving correctness.
+For LOW/MEDIUM-risk changes:
 
+- test only behavior directly affected by the diff;
+- use the smallest matrix capable of disproving correctness;
+- prefer 3–8 focused adversarial cases;
+- run only the minimum regression needed;
+- keep the final report concise;
+- do not reopen already-verified areas without a concrete dependency from the new diff.
 
+For persistence, migration, import/export, destructive replacement or other
+high-risk data changes:
 
-If a harness/environment problem fails twice:
+- go deeper only on the affected invariants;
+- prioritize data preservation, partial writes, rollback and hostile input;
+- do not expand into unrelated application behavior.
 
+Prefer pure/in-memory tests when they can exercise the real production logic.
 
+Browser, CDP or a local server may be used only when the behavior genuinely
+requires a browser environment and explicit authorization has been given.
+
+Do not launch browser automation merely to increase confidence when existing
+evidence is already sufficient.
+
+Do not reimplement or mirror production logic in another language and present
+the mirror as execution evidence for the production code.
+
+If the required real runtime is unavailable:
+
+- use static/source evidence where sufficient;
+- otherwise report the affected test as BLOCKED.
+
+If a harness/environment approach fails twice:
 
 STOP.
 
-
-
-Report the blocker.
-
-
-
 Do not repeatedly redesign test infrastructure.
 
+If a BLOCKER or HIGH finding is demonstrated:
 
+STOP further broad exploration and report it.
 
-Do not investigate unrelated environment details.
-
-
+Pre-existing or out-of-scope issues may be mentioned briefly when materially
+relevant, but must not be investigated further unless the active task requires it.
 
 Testing product behavior is the objective.
-
-
 
 Building sophisticated test infrastructure is not.
 
 
-
 ---
-
 
 
 # Test strategy
@@ -243,6 +262,9 @@ Before executing:
 6. prioritize corruption/security/migration scenarios;
 
 7. execute the smallest sufficient matrix.
+
+Stop once the bounded matrix provides sufficient evidence for or against the
+changed invariants. More tests are not inherently better evidence.
 
 ## Test integrity
 
