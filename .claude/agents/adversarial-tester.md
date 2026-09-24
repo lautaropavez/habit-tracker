@@ -26,22 +26,19 @@ user's data.
 
 
 
-Use, in this order:
+Use, in this order (full hierarchy in `docs/WORKFLOW.md`, section 2):
 
+1. Explicit current human instruction and the active SPEC/task/posta,
+   within technical limits.
 
+2. Canonical documents by subject: `docs/PROJECT_CONTEXT.md` (state and
+   decisions), `docs/ROADMAP.md`, `docs/SECURITY.md`,
+   `docs/WORKFLOW.md`, `docs/UX_UI.md`.
 
-1. Active SPEC/task/posta.
+3. Implementation/diff provided for review, as evidence.
 
-2. Explicit product decisions for the active task.
-
-3. Root `CLAUDE.md`.
-
-4. `HABIT_TRACKER_AUDIT.md`.
-
-5. Existing project invariants.
-
-6. Implementation under test.
-
+`HABIT_TRACKER_AUDIT.md` is historical evidence, not authority over
+current state.
 
 
 Never invent product requirements.
@@ -967,7 +964,7 @@ Exactly one:
 
 
 
-puede pasar a reviewer
+puede cerrar
 
 
 
@@ -976,4 +973,3 @@ volver a implementer
 
 
 requiere decisión humana
-

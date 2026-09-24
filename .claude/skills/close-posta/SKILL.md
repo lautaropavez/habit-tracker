@@ -42,7 +42,7 @@ It does NOT:
 
 It may stage/commit/merge only under the exact Gate C / Gate D rules below.
 
-Always obey root `CLAUDE.md`.
+Always obey root `CLAUDE.md`, `docs/WORKFLOW.md` and `docs/SECURITY.md`.
 
 ---
 
@@ -68,9 +68,12 @@ If no formal SPEC exists, reconstruct the contract from:
 
 1. explicit current human authorization;
 
-2. `CLAUDE.md`;
+2. the canonical documents by subject (`docs/WORKFLOW.md`,
+   `docs/SECURITY.md`, `docs/PROJECT_CONTEXT.md`, `docs/ROADMAP.md`,
+   `docs/UX_UI.md`).
 
-3. `HABIT_TRACKER_AUDIT.md`.
+`HABIT_TRACKER_AUDIT.md` is historical evidence, not a source of
+current state.
 
 Never invent missing product decisions.
 
@@ -434,6 +437,13 @@ Do not execute it.
 
 Previous approval does not carry over automatically.
 
+Exception for TRIVIAL and NORMAL posta (risk matrix in
+`docs/WORKFLOW.md`):
+one closing authorization given on the approved contract (branch, exact
+paths, exact commit message and merge base) may cover Gate C and Gate D
+together.
+For SENSIBLE and CRITICO posta, Gate C and Gate D are authorized
+separately.
 
 
 Example conceptually:
@@ -442,7 +452,7 @@ Example conceptually:
 
 branch:
 
-claude/habit-tracker
+chore/example-branch
 
 
 
@@ -716,6 +726,9 @@ No merge.
 
 Previous approval does not carry over.
 
+In TRIVIAL and NORMAL posta, the closing authorization described in
+"Gate C authorization" may already include Gate D if the base and
+feature branches were named.
 
 
 ---
@@ -932,11 +945,13 @@ This skill never fixes findings.
 
 
 
-BLOCKER/HIGH/product decision/scope expansion:
-
-
+BLOCKER/HIGH/product decision/security decision/conflict between
+sources/scope expansion/risk escalation:
 
 STOP human.
+
+Otherwise, in TRIVIAL and NORMAL posta, do not stop for routine steps
+(`docs/WORKFLOW.md`, Gate A).
 
 
 

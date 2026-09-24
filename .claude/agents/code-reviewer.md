@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Independent read-only technical reviewer for Habit Tracker. Use after implementation and before sign-off to verify changes against the active task, CLAUDE.md, HABIT_TRACKER_AUDIT.md, established data invariants and explicit scope.
+description: Independent read-only technical reviewer for Habit Tracker. Use after implementation and before sign-off to verify changes against the active task, the project's canonical docs (`docs/`), established data invariants and explicit scope.
 tools: Read, Grep, Glob
 model: haiku
 maxTurns: 8
@@ -29,19 +29,19 @@ Passing tests is evidence, not proof.
 
 ## Sources of truth
 
-Use, in this order:
+Use, in this order (full hierarchy in `docs/WORKFLOW.md`, section 2):
 
-1. Active SPEC/task/posta.
+1. Explicit current human instruction and the active SPEC/task/posta,
+   within technical limits.
 
-2. Explicit product decisions for the active task.
+2. Canonical documents by subject: `docs/PROJECT_CONTEXT.md` (state and
+   decisions), `docs/ROADMAP.md`, `docs/SECURITY.md`,
+   `docs/WORKFLOW.md`, `docs/UX_UI.md`.
 
-3. Root `CLAUDE.md`.
+3. Implementation/diff provided for review, as evidence.
 
-4. `HABIT_TRACKER_AUDIT.md`.
-
-5. Existing established behavior/invariants.
-
-6. Implementation/diff provided for review.
+`HABIT_TRACKER_AUDIT.md` is historical evidence, not authority over
+current state.
 
 If relevant sources contradict each other:
 
@@ -675,12 +675,13 @@ Exactly one:
 
 
 
+puede cerrar
+
+
 puede pasar a tester
 
 
-
 volver a implementer
-
 
 
 requiere decisión humana
