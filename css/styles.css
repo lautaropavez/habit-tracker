@@ -18,6 +18,35 @@ h1 {
   text-align: center;
 }
 
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.header-row h1 {
+  margin-bottom: 0;
+}
+
+.btn-export {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 6px 10px;
+  background: #3a3a3a;
+  color: #ccc;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .tabs {
   display: flex;
   gap: 8px;

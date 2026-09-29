@@ -1,6 +1,12 @@
 const ICONS = ['🧘', '💪', '🏃', '📚', '✍️', '🥗', '💧', '😴', '🎨', '🎵', '🧹', '💼'];
 const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788'];
 
+// Whitelist congelada del schema Backup v1 (5a). Copia literal e
+// independiente de ICONS: cambios futuros a ICONS (paleta de la UI) NO
+// deben alterar este contrato. Ampliar el conjunto exportable es una
+// decisión de producto explícita y separada.
+const BACKUP_V1_ICONS = ['🧘', '💪', '🏃', '📚', '✍️', '🥗', '💧', '😴', '🎨', '🎵', '🧹', '💼'];
+
 let state = {
   habits: [],
   completions: {},
@@ -201,10 +207,255 @@ function saveData() {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------
+// Validación y Backup v1 (5a)
+//
+// Todo dato persistido se trata como no confiable: loadData() solo valida
+// la forma raíz (habits = Array de objetos, completions = objeto plano),
+// nunca los campos internos. Estos validadores son la única barrera real
+// antes de aplicar un valor a `style`/render o de incluirlo en un export.
+// ---------------------------------------------------------------------
+
+// Cuenta code points Unicode reales, no unidades UTF-16 (String.length
+// cuenta mal los emoji fuera del plano básico, "astral").
+function countCodePoints(str) {
+  return Array.from(str).length;
+}
+
+// Límite de creación/edición desde la UI: 1..200 code points.
+function isValidUiName(name) {
+  if (typeof name !== 'string') return false;
+  const n = countCodePoints(name);
+  return n >= 1 && n <= 200;
+}
+
+// Límite del contrato Backup v1 / schema: 1..5000 code points. Deliberadamente
+// distinto y más amplio que isValidUiName(), para no romper el export de un
+// hábito histórico/legacy creado antes de que existiera el límite de la UI.
+function isValidSchemaName(name) {
+  if (typeof name !== 'string') return false;
+  const n = countCodePoints(name);
+  return n >= 1 && n <= 5000;
+}
+
+const VALID_FREQ = ['daily', 'custom'];
+const VALID_FREQ_PERIOD = ['week', 'month'];
+
+function isValidFreq(freq) {
+  return VALID_FREQ.includes(freq);
+}
+
+function isValidFreqPeriod(freqPeriod) {
+  return VALID_FREQ_PERIOD.includes(freqPeriod);
+}
+
+function isValidFreqCount(n) {
+  return Number.isInteger(n) && n >= 1 && n <= 30;
+}
+
+function isValidIcon(icon) {
+  return BACKUP_V1_ICONS.includes(icon);
+}
+
+function isValidColorHex(color) {
+  return typeof color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color);
+}
+
+const RESERVED_IDS = ['__proto__', 'constructor', 'prototype'];
+
+function isValidIdFormat(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id);
+}
+
+function isReservedId(id) {
+  return RESERVED_IDS.includes(id);
+}
+
+// Genera un id de hábito con la misma base que hoy (Date.now()), pero con
+// resolución determinística y acotada de colisión: nunca vuelve a llamar
+// Date.now() para resolverla, y nunca reescribe un id existente.
+function generateHabitId() {
+  const base = Date.now().toString();
+  if (!state.habits.some(h => h.id === base)) return base;
+  const MAX_ATTEMPTS = 1000;
+  for (let suffix = 1; suffix <= MAX_ATTEMPTS; suffix++) {
+    const candidate = `${base}-${suffix}`;
+    if (!state.habits.some(h => h.id === candidate)) return candidate;
+  }
+  throw new Error('No se pudo generar un id único para el hábito.');
+}
+
+// Preflight de export: valida TODO el estado vivo contra el contrato
+// Backup v1 antes de exportar. Nunca repara, trunca ni normaliza el dato
+// inválido -- solo lo reporta y aborta. Las únicas normalizaciones
+// permitidas (completions false y fechas vacías) ocurren después, en
+// buildBackupV1(), nunca acá.
+function validateExportState() {
+  if (hasStorageCorruption()) {
+    return { ok: false, error: 'No se puede exportar mientras los datos guardados estén dañados.' };
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const seenIds = new Set();
+
+  for (let i = 0; i < state.habits.length; i++) {
+    const habit = state.habits[i];
+    const label = `hábito #${i + 1}${habit && typeof habit.name === 'string' ? ` ("${habit.name}")` : ''}`;
+
+    if (!habit || typeof habit !== 'object' || Array.isArray(habit)) {
+      return { ok: false, error: `${label}: registro inválido.` };
+    }
+    if (!isValidIdFormat(habit.id)) {
+      return { ok: false, error: `${label}: id inválido.` };
+    }
+    if (isReservedId(habit.id)) {
+      return { ok: false, error: `${label}: id reservado no permitido.` };
+    }
+    if (seenIds.has(habit.id)) {
+      return { ok: false, error: `${label}: id duplicado.` };
+    }
+    seenIds.add(habit.id);
+
+    if (!isValidSchemaName(habit.name)) {
+      return { ok: false, error: `${label}: nombre inválido (1 a 5000 caracteres).` };
+    }
+    if (!isValidIcon(habit.icon)) {
+      return { ok: false, error: `${label}: ícono inválido.` };
+    }
+    if (!isValidColorHex(habit.color)) {
+      return { ok: false, error: `${label}: color inválido.` };
+    }
+    if (!isValidFreq(habit.freq)) {
+      return { ok: false, error: `${label}: frecuencia inválida.` };
+    }
+    if (!isValidFreqPeriod(habit.freqPeriod)) {
+      return { ok: false, error: `${label}: período de frecuencia inválido.` };
+    }
+    if (!isValidFreqCount(habit.freqCount)) {
+      return { ok: false, error: `${label}: cantidad de frecuencia inválida (1 a 30).` };
+    }
+
+    const createdAtDate = parseLocalDate(habit.createdAt);
+    if (!createdAtDate) {
+      return { ok: false, error: `${label}: fecha de creación inválida.` };
+    }
+    if (createdAtDate > today) {
+      return { ok: false, error: `${label}: fecha de creación futura.` };
+    }
+  }
+
+  if (!state.completions || typeof state.completions !== 'object' || Array.isArray(state.completions)) {
+    return { ok: false, error: 'Registro de días completados inválido.' };
+  }
+
+  for (const dateKey in state.completions) {
+    if (!isValidDateStr(dateKey)) {
+      return { ok: false, error: `Fecha de completado inválida: "${dateKey}".` };
+    }
+    const entry = state.completions[dateKey];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, error: `Registro de completados inválido para "${dateKey}".` };
+    }
+    for (const habitId in entry) {
+      if (entry[habitId] !== true && entry[habitId] !== false) {
+        return { ok: false, error: `Valor de completado inválido para "${dateKey}".` };
+      }
+      // Solo las entradas true sobreviven al export (ver buildBackupV1);
+      // una entrada true que referencia un hábito inexistente sería
+      // exportada como dato incoherente, así que se trata como fatal.
+      // Una entrada false huérfana nunca llega al export, así que no
+      // bloquea el preflight.
+      if (entry[habitId] === true && !seenIds.has(habitId)) {
+        return { ok: false, error: `Completado huérfano: "${dateKey}" referencia un hábito inexistente.` };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
+// Pura: asume que validateExportState() ya dio ok. Construye el objeto
+// final campo por campo (nunca copia el hábito vivo completo por spread),
+// para que ninguna propiedad extra accidental llegue al backup.
+function buildBackupV1() {
+  const habits = state.habits.map(h => ({
+    id: h.id,
+    name: h.name,
+    icon: h.icon,
+    color: h.color,
+    freq: h.freq,
+    freqCount: h.freqCount,
+    freqPeriod: h.freqPeriod,
+    createdAt: h.createdAt
+  }));
+
+  const completions = {};
+  for (const dateKey in state.completions) {
+    const entry = state.completions[dateKey];
+    const trueIds = Object.keys(entry).filter(id => entry[id] === true);
+    if (trueIds.length > 0) {
+      const cleanEntry = {};
+      trueIds.forEach(id => { cleanEntry[id] = true; });
+      completions[dateKey] = cleanEntry;
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    habits,
+    completions
+  };
+}
+
+// Orquesta el export real: preflight -> build -> nombre -> compartir/descargar.
+// Nunca modifica state ni localStorage.
+async function exportBackup() {
+  const validation = validateExportState();
+  if (!validation.ok) {
+    alert(`No se pudo exportar: ${validation.error}`);
+    return;
+  }
+
+  const backup = buildBackupV1();
+  const json = JSON.stringify(backup, null, 2);
+  const now = new Date();
+  const filename = `habitos-backup-${toLocalDateStr(now)}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}.json`;
+  const blob = new Blob([json], { type: 'application/json' });
+
+  if (navigator.canShare && typeof File === 'function') {
+    try {
+      const file = new File([blob], filename, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        // Cancelar el Share Sheet es una acción voluntaria del usuario:
+        // no es un error, no se fuerza una descarga alternativa.
+        return;
+      }
+      // Cualquier otro fallo real de compartir cae al fallback de descarga.
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 function setupEvents() {
   document.getElementById('addBtn').onclick = openModal;
   document.getElementById('cancelBtn').onclick = closeModal;
   document.getElementById('saveBtn').onclick = saveHabit;
+  document.getElementById('exportBtn').onclick = exportBackup;
 
   document.getElementById('prevMonth').onclick = () => {
     state.currentMonth.setMonth(state.currentMonth.getMonth() - 1);
@@ -284,6 +535,90 @@ function render() {
   if (state.currentView === 'stats') renderStats();
 }
 
+// Construye la tarjeta de un hábito con DOM API segura: habit.name/icon/color
+// y habit.id (dato persistido, no confiable) nunca se interpolan en innerHTML.
+// El color se valida contra el formato hex antes de aplicarse a style.
+function createHabitCard(habit, today) {
+  const isCompleted = state.completions[today]?.[habit.id] || false;
+  const stats = calculateStats(habit);
+  const corrupted = hasStorageCorruption();
+
+  const card = document.createElement('div');
+  card.className = 'habit-card';
+  if (isValidColorHex(habit.color)) card.style.borderLeftColor = habit.color;
+
+  const header = document.createElement('div');
+  header.className = 'habit-header';
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'habit-icon';
+  iconSpan.textContent = habit.icon;
+
+  const info = document.createElement('div');
+  info.className = 'habit-info';
+  const nameDiv = document.createElement('div');
+  nameDiv.className = 'habit-name';
+  nameDiv.textContent = habit.name;
+  const freqDiv = document.createElement('div');
+  freqDiv.className = 'habit-freq';
+  freqDiv.textContent = `${getFreqText(habit)}${getPeriodProgressText(habit, stats)}`;
+  info.appendChild(nameDiv);
+  info.appendChild(freqDiv);
+
+  const checkBtn = document.createElement('button');
+  checkBtn.className = `btn btn-check ${isCompleted ? 'completed' : ''}`;
+  checkBtn.dataset.action = 'toggle';
+  checkBtn.dataset.id = habit.id;
+  checkBtn.dataset.date = today;
+  checkBtn.disabled = corrupted;
+  checkBtn.textContent = isCompleted ? '✓' : '○';
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn btn-edit';
+  editBtn.dataset.action = 'edit';
+  editBtn.dataset.id = habit.id;
+  editBtn.disabled = corrupted;
+  editBtn.textContent = '✏️';
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn btn-delete';
+  deleteBtn.dataset.action = 'delete';
+  deleteBtn.dataset.id = habit.id;
+  deleteBtn.disabled = corrupted;
+  deleteBtn.textContent = '🗑️';
+
+  header.appendChild(iconSpan);
+  header.appendChild(info);
+  header.appendChild(checkBtn);
+  header.appendChild(editBtn);
+  header.appendChild(deleteBtn);
+
+  const statsDiv = document.createElement('div');
+  statsDiv.className = 'stats';
+  [
+    ['Tasa éxito', `${stats.successRate}%`],
+    ['Racha', stats.currentStreak],
+    ['Mejor racha', stats.bestStreak],
+    ['Total', stats.totalCompleted]
+  ].forEach(([label, value]) => {
+    const stat = document.createElement('div');
+    stat.className = 'stat';
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'stat-label';
+    labelDiv.textContent = label;
+    const valueDiv = document.createElement('div');
+    valueDiv.className = 'stat-value';
+    valueDiv.textContent = value;
+    stat.appendChild(labelDiv);
+    stat.appendChild(valueDiv);
+    statsDiv.appendChild(stat);
+  });
+
+  card.appendChild(header);
+  card.appendChild(statsDiv);
+  return card;
+}
+
 function renderHabits() {
   const container = document.getElementById('todayView');
   const today = getToday();
@@ -293,45 +628,10 @@ function renderHabits() {
     return;
   }
 
-  container.innerHTML = state.habits.map(habit => {
-    const isCompleted = state.completions[today]?.[habit.id] || false;
-    const stats = calculateStats(habit);
-
-    return `
-      <div class="habit-card" style="border-left-color: ${habit.color}">
-        <div class="habit-header">
-          <span class="habit-icon">${habit.icon}</span>
-          <div class="habit-info">
-            <div class="habit-name">${habit.name}</div>
-            <div class="habit-freq">${getFreqText(habit)}${getPeriodProgressText(habit, stats)}</div>
-          </div>
-          <button class="btn btn-check ${isCompleted ? 'completed' : ''}" data-action="toggle" data-id="${habit.id}" data-date="${today}" ${hasStorageCorruption() ? 'disabled' : ''}>
-            ${isCompleted ? '✓' : '○'}
-          </button>
-          <button class="btn btn-edit" data-action="edit" data-id="${habit.id}" ${hasStorageCorruption() ? 'disabled' : ''}>✏️</button>
-          <button class="btn btn-delete" data-action="delete" data-id="${habit.id}" ${hasStorageCorruption() ? 'disabled' : ''}>🗑️</button>
-        </div>
-        <div class="stats">
-          <div class="stat">
-            <div class="stat-label">Tasa éxito</div>
-            <div class="stat-value">${stats.successRate}%</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">Racha</div>
-            <div class="stat-value">${stats.currentStreak}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">Mejor racha</div>
-            <div class="stat-value">${stats.bestStreak}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">Total</div>
-            <div class="stat-value">${stats.totalCompleted}</div>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join('');
+  container.innerHTML = '';
+  state.habits.forEach(habit => {
+    container.appendChild(createHabitCard(habit, today));
+  });
 
   container.querySelectorAll('[data-action]').forEach(btn => {
     btn.onclick = (e) => {
@@ -559,12 +859,24 @@ function closeModal() {
 function saveHabit() {
   if (hasStorageCorruption()) return;
   const name = document.getElementById('habitName').value.trim();
-  if (!name) { alert('Ingresa un nombre'); return; }
+
+  if (!isValidUiName(name)) {
+    alert(name.length === 0 ? 'Ingresa un nombre' : 'El nombre no puede superar 200 caracteres');
+    return;
+  }
+  if (!isValidFreq(state.selectedFreq)) { alert('Frecuencia inválida'); return; }
+  if (!isValidFreqPeriod(state.freqPeriod)) { alert('Período de frecuencia inválido'); return; }
+  if (!isValidFreqCount(state.freqCount)) {
+    alert('La frecuencia personalizada debe ser un número entero entre 1 y 30');
+    return;
+  }
+  if (!isValidIcon(state.selectedIcon)) { alert('Ícono inválido'); return; }
+  if (!isValidColorHex(state.selectedColor)) { alert('Color inválido'); return; }
 
   const existing = state.editingId ? state.habits.find(h => h.id === state.editingId) : null;
 
   const habit = {
-    id: state.editingId || Date.now().toString(),
+    id: state.editingId || generateHabitId(),
     name,
     icon: state.selectedIcon,
     color: state.selectedColor,
@@ -590,14 +902,13 @@ function updateCalendarSelect() {
   const select = document.getElementById('calendarHabitSelect');
   const prev = select.value;
 
-  if (state.habits.length === 0) {
-    select.innerHTML = '';
-    return;
-  }
-
-  select.innerHTML = state.habits.map(h =>
-    `<option value="${h.id}">${h.icon} ${h.name}</option>`
-  ).join('');
+  select.innerHTML = '';
+  state.habits.forEach(h => {
+    const option = document.createElement('option');
+    option.value = h.id;
+    option.textContent = `${h.icon} ${h.name}`;
+    select.appendChild(option);
+  });
 
   if (prev && state.habits.some(h => h.id === prev)) {
     select.value = prev;
@@ -642,7 +953,7 @@ function renderCalendar() {
     const isCompleted = state.completions[dateStr]?.[habitId];
     const isFuture = date > today;
 
-    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
   }
 
   for (let day = 1; day <= daysInMonth; day++) {
@@ -653,7 +964,7 @@ function renderCalendar() {
     const isFuture = date > today;
 
     html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
   }
 
   const remainingDays = 42 - (startDay + daysInMonth);
@@ -664,12 +975,16 @@ data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}<
     const isFuture = date > today;
 
     html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
   }
 
   grid.innerHTML = html;
 
+  // habitId sale de habit.id (dato persistido, no confiable): se asigna acá
+  // por property assignment (dataset), nunca interpolado en el template de
+  // arriba, para no exponer una superficie de inyección de atributos.
   document.querySelectorAll('.calendar-day').forEach(cell => {
+    cell.dataset.habit = habitId;
     cell.onclick = () => {
       if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
@@ -685,6 +1000,101 @@ data-date="${dateStr}" data-habit="${habitId}" data-future="${isFuture}">${day}<
   });
 }
 
+// habit.name/icon/color son datos persistidos, no confiables: se asignan vía
+// textContent/property, nunca interpolados en innerHTML. color se valida
+// contra el formato hex antes de aplicarse a cualquier style.
+function createStatsCard(habit) {
+  const stats = calculateStats(habit);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dateStr = toLocalDateStr(d);
+    const dayName = ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()];
+    last7Days.push({
+      label: dayName,
+      value: state.completions[dateStr]?.[habit.id] ? 1 : 0
+    });
+  }
+
+  const safeColor = isValidColorHex(habit.color) ? habit.color : null;
+
+  const card = document.createElement('div');
+  card.className = 'stats-card';
+  if (safeColor) card.style.borderLeftColor = safeColor;
+
+  const header = document.createElement('div');
+  header.className = 'stats-header';
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'habit-icon';
+  iconSpan.textContent = habit.icon;
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'stats-title';
+  titleSpan.textContent = habit.name;
+  header.appendChild(iconSpan);
+  header.appendChild(titleSpan);
+
+  const freqDiv = document.createElement('div');
+  freqDiv.className = 'habit-freq';
+  freqDiv.textContent = `${getFreqText(habit)}${getPeriodProgressText(habit, stats)}`;
+
+  const numbersDiv = document.createElement('div');
+  numbersDiv.className = 'stats-numbers';
+  [
+    [`${stats.successRate}%`, 'Tasa de éxito'],
+    [stats.currentStreak, 'Racha actual'],
+    [stats.bestStreak, 'Mejor racha'],
+    [stats.totalCompleted, 'Total completados']
+  ].forEach(([value, label]) => {
+    const box = document.createElement('div');
+    box.className = 'stat-box';
+    const valueDiv = document.createElement('div');
+    valueDiv.className = 'stat-box-value';
+    valueDiv.textContent = value;
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'stat-box-label';
+    labelDiv.textContent = label;
+    box.appendChild(valueDiv);
+    box.appendChild(labelDiv);
+    numbersDiv.appendChild(box);
+  });
+
+  const chart = document.createElement('div');
+  chart.className = 'chart';
+  const chartTitle = document.createElement('div');
+  chartTitle.className = 'chart-title';
+  chartTitle.textContent = 'Últimos 7 días';
+  const chartBars = document.createElement('div');
+  chartBars.className = 'chart-bars';
+
+  last7Days.forEach(day => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chart-bar-wrapper';
+    const bar = document.createElement('div');
+    bar.className = 'chart-bar';
+    bar.style.height = `${day.value * 100}%`;
+    if (safeColor) bar.style.background = safeColor;
+    const label = document.createElement('div');
+    label.className = 'chart-label';
+    label.textContent = day.label;
+    wrapper.appendChild(bar);
+    wrapper.appendChild(label);
+    chartBars.appendChild(wrapper);
+  });
+
+  chart.appendChild(chartTitle);
+  chart.appendChild(chartBars);
+
+  card.appendChild(header);
+  card.appendChild(freqDiv);
+  card.appendChild(numbersDiv);
+  card.appendChild(chart);
+  return card;
+}
+
 function renderStats() {
   const container = document.getElementById('statsView');
 
@@ -693,66 +1103,10 @@ function renderStats() {
     return;
   }
 
-  container.innerHTML = state.habits.map(habit => {
-    const stats = calculateStats(habit);
-    const last7Days = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateStr = toLocalDateStr(d);
-      const dayName = ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()];
-      last7Days.push({
-        label: dayName,
-        value: state.completions[dateStr]?.[habit.id] ? 1 : 0
-      });
-    }
-
-    const barsHtml = last7Days.map(day => `
-<div class="chart-bar-wrapper">
-<div class="chart-bar" style="height: ${day.value * 100}%; background: ${habit.color};"></div>
-<div class="chart-label">${day.label}</div>
-</div>
-`).join('');
-
-    return `
-<div class="stats-card" style="border-left-color: ${habit.color}">
-<div class="stats-header">
-<span class="habit-icon">${habit.icon}</span>
-<span class="stats-title">${habit.name}</span>
-</div>
-<div class="habit-freq">${getFreqText(habit)}${getPeriodProgressText(habit, stats)}</div>
-
-<div class="stats-numbers">
-<div class="stat-box">
-<div class="stat-box-value">${stats.successRate}%</div>
-<div class="stat-box-label">Tasa de éxito</div>
-</div>
-<div class="stat-box">
-<div class="stat-box-value">${stats.currentStreak}</div>
-<div class="stat-box-label">Racha actual</div>
-</div>
-<div class="stat-box">
-<div class="stat-box-value">${stats.bestStreak}</div>
-<div class="stat-box-label">Mejor racha</div>
-</div>
-<div class="stat-box">
-<div class="stat-box-value">${stats.totalCompleted}</div>
-<div class="stat-box-label">Total completados</div>
-</div>
-</div>
-
-<div class="chart">
-<div class="chart-title">Últimos 7 días</div>
-<div class="chart-bars">
-${barsHtml}
-</div>
-</div>
-</div>
-`;
-  }).join('');
+  container.innerHTML = '';
+  state.habits.forEach(habit => {
+    container.appendChild(createStatsCard(habit));
+  });
 }
 
 init();
