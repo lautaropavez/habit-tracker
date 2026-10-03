@@ -101,7 +101,15 @@ function getPeriodTarget(habit) {
 }
 
 function init() {
+  const recovery = recoverInterruptedImport();
+  if (recovery.state === 'blocking-recovery') {
+    enterBlockingRecovery(recovery.reason);
+    return;
+  }
   loadData();
+  if (recovery.state === 'snapshot-pending-cleanup') {
+    finishStartupCleanupB();
+  }
   setupEvents();
   render();
 }
@@ -451,11 +459,704 @@ async function exportBackup() {
   URL.revokeObjectURL(url);
 }
 
+// =======================================================================
+// Import v1 + Preview + Safe Replace (5b)
+//
+// Todo archivo importado se trata como completamente no confiable.
+// validateBackup() es pura (sin DOM, sin storage, sin red). El reemplazo
+// es la única operación permitida -- nunca fusión/merge.
+// =======================================================================
+
+const SNAPSHOT_KEY = 'habitTracker.import.snapshot.v1';
+const MARKER_KEY = 'habitTracker.import.state.v1';
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+const MAX_IMPORT_HABITS = 200;
+const MAX_IMPORT_COMPLETION_DATES = 20000;
+const MAX_IMPORT_TRUE_ENTRIES = 200000;
+
+function utf8ByteLength(str) {
+  return new TextEncoder().encode(str).length;
+}
+
+function hasControlChars(str) {
+  return /[\u0000-\u001F\u007F]/.test(str);
+}
+
+// Copia sin cadena de prototipo: iterar/leer/escribir por clave externa
+// (incluida una clave literal "__proto__" producida por JSON.parse) nunca
+// dispara el accessor especial de Object.prototype.
+function toNullProtoCopy(obj) {
+  const out = Object.create(null);
+  for (const key of Object.keys(obj)) {
+    out[key] = obj[key];
+  }
+  return out;
+}
+
+// -----------------------------------------------------------------------
+// validateBackup(rawText): pura. Nunca repara/trunca/normaliza en silencio
+// más allá de las dos excepciones explícitas (false y fecha vacía, ambas
+// con warning).
+// -----------------------------------------------------------------------
+function validateBackup(rawText) {
+  const warnings = [];
+  const fail = (fatal) => ({ ok: false, fatal, warnings, summary: null, data: null });
+
+  if (typeof rawText !== 'string') return fail('Contenido inválido.');
+  if (utf8ByteLength(rawText) > MAX_IMPORT_BYTES) return fail('El archivo supera el límite de 5 MB.');
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (e) {
+    return fail('El archivo no es JSON válido.');
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return fail('La raíz del backup debe ser un objeto.');
+  }
+
+  const ALLOWED_ROOT = ['schemaVersion', 'exportedAt', 'habits', 'completions'];
+  const rootKeys = Object.keys(parsed);
+  const unknownRoot = rootKeys.filter(k => !ALLOWED_ROOT.includes(k));
+  if (unknownRoot.length > 0) return fail(`Campo desconocido en la raíz: "${unknownRoot[0]}".`);
+  for (const k of ALLOWED_ROOT) {
+    if (!(k in parsed)) return fail(`Falta el campo raíz "${k}".`);
+  }
+
+  if (parsed.schemaVersion !== 1) return fail('schemaVersion no es 1.');
+  if (typeof parsed.exportedAt !== 'string' || isNaN(Date.parse(parsed.exportedAt))) {
+    return fail('exportedAt no es una fecha ISO válida.');
+  }
+  if (!Array.isArray(parsed.habits)) return fail('"habits" debe ser un array.');
+  if (parsed.habits.length > MAX_IMPORT_HABITS) {
+    return fail(`Demasiados hábitos (máximo ${MAX_IMPORT_HABITS}).`);
+  }
+  if (!parsed.completions || typeof parsed.completions !== 'object' || Array.isArray(parsed.completions)) {
+    return fail('"completions" debe ser un objeto.');
+  }
+
+  const ALLOWED_HABIT = ['id', 'name', 'icon', 'color', 'freq', 'freqCount', 'freqPeriod', 'createdAt'];
+  const seenIds = new Set();
+  const validHabits = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  for (let i = 0; i < parsed.habits.length; i++) {
+    const habit = parsed.habits[i];
+    const label = `hábito #${i + 1}`;
+    if (!habit || typeof habit !== 'object' || Array.isArray(habit)) return fail(`${label}: registro inválido.`);
+
+    const habitKeys = Object.keys(habit);
+    const unknownHabit = habitKeys.filter(k => !ALLOWED_HABIT.includes(k));
+    if (unknownHabit.length > 0) return fail(`${label}: campo desconocido "${unknownHabit[0]}".`);
+    for (const k of ALLOWED_HABIT) {
+      if (!(k in habit)) return fail(`${label}: falta el campo "${k}".`);
+    }
+
+    if (!isValidIdFormat(habit.id)) return fail(`${label}: id inválido.`);
+    if (isReservedId(habit.id)) return fail(`${label}: id reservado no permitido.`);
+    if (seenIds.has(habit.id)) return fail(`${label}: id duplicado.`);
+
+    if (!isValidSchemaName(habit.name)) return fail(`${label}: nombre inválido (1 a 5000 caracteres).`);
+    if (hasControlChars(habit.name)) return fail(`${label}: el nombre contiene caracteres de control.`);
+    if (!isValidIcon(habit.icon)) return fail(`${label}: ícono inválido.`);
+    if (countCodePoints(habit.icon) > 8) return fail(`${label}: ícono demasiado largo.`);
+    if (!isValidColorHex(habit.color)) return fail(`${label}: color inválido.`);
+    if (!isValidFreq(habit.freq)) return fail(`${label}: frecuencia inválida.`);
+    if (!isValidFreqPeriod(habit.freqPeriod)) return fail(`${label}: período de frecuencia inválido.`);
+    if (!isValidFreqCount(habit.freqCount)) return fail(`${label}: cantidad de frecuencia inválida (1 a 30).`);
+
+    const createdAtDate = parseLocalDate(habit.createdAt);
+    if (!createdAtDate) return fail(`${label}: fecha de creación inválida.`);
+    if (createdAtDate > today) return fail(`${label}: fecha de creación futura.`);
+
+    seenIds.add(habit.id);
+    validHabits.push({
+      id: habit.id, name: habit.name, icon: habit.icon, color: habit.color,
+      freq: habit.freq, freqCount: habit.freqCount, freqPeriod: habit.freqPeriod,
+      createdAt: habit.createdAt
+    });
+  }
+
+  const completionsIn = toNullProtoCopy(parsed.completions);
+  const dateKeys = Object.keys(completionsIn);
+  if (dateKeys.length > MAX_IMPORT_COMPLETION_DATES) {
+    return fail(`Demasiadas fechas de completado (máximo ${MAX_IMPORT_COMPLETION_DATES}).`);
+  }
+
+  let trueCount = 0;
+  const outCompletions = Object.create(null);
+
+  for (const dateKey of dateKeys) {
+    const dateObj = parseLocalDate(dateKey);
+    if (!dateObj) return fail(`Fecha de completado inválida: "${dateKey}".`);
+    if (dateObj > today) return fail(`Fecha de completado futura: "${dateKey}".`);
+
+    const entry = completionsIn[dateKey];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return fail(`Registro de completados inválido para "${dateKey}".`);
+    }
+    const entrySafe = toNullProtoCopy(entry);
+    const outEntry = Object.create(null);
+    let anyTrueThisDate = false;
+
+    for (const habitId of Object.keys(entrySafe)) {
+      const value = entrySafe[habitId];
+      if (value !== true && value !== false) return fail(`Valor de completado inválido para "${dateKey}".`);
+
+      const habitExists = seenIds.has(habitId);
+      if (value === true) {
+        if (!habitExists) return fail(`Completado huérfano: "${dateKey}" referencia un hábito inexistente.`);
+        trueCount++;
+        if (trueCount > MAX_IMPORT_TRUE_ENTRIES) {
+          return fail(`Demasiadas entradas de completado (máximo ${MAX_IMPORT_TRUE_ENTRIES}).`);
+        }
+        outEntry[habitId] = true;
+        anyTrueThisDate = true;
+      } else {
+        warnings.push(habitExists
+          ? `Completado "false" descartado en "${dateKey}".`
+          : `Completado "false" huérfano descartado en "${dateKey}".`);
+      }
+    }
+
+    if (anyTrueThisDate) {
+      outCompletions[dateKey] = outEntry;
+    } else {
+      warnings.push(`Fecha "${dateKey}" quedó sin completados y se omitió.`);
+    }
+  }
+
+  return {
+    ok: true,
+    fatal: null,
+    warnings,
+    summary: {
+      habitsCount: validHabits.length,
+      completionDatesCount: Object.keys(outCompletions).length,
+      trueEntriesCount: trueCount,
+      exportedAt: parsed.exportedAt
+    },
+    data: { schemaVersion: 1, exportedAt: parsed.exportedAt, habits: validHabits, completions: outCompletions }
+  };
+}
+
+// -----------------------------------------------------------------------
+// Primitivas de storage con verificación por igualdad literal (sin hash).
+// -----------------------------------------------------------------------
+// Lectura segura de una key: distingue explícitamente una excepción de
+// storage (ok:false) de una clave genuinamente ausente (ok:true, value:null),
+// para que ninguna excepción se confunda con "ausente" ni con un dato válido.
+function readExactRaw(key) {
+  try {
+    return { ok: true, value: localStorage.getItem(key) };
+  } catch (e) {
+    return { ok: false, value: undefined };
+  }
+}
+
+function writeAndVerify(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    return false;
+  }
+  try {
+    return localStorage.getItem(key) === value;
+  } catch (e) {
+    return false;
+  }
+}
+
+function isStructurallyValidHabitsJson(str) {
+  try {
+    const parsed = JSON.parse(str);
+    return Array.isArray(parsed) && parsed.every(el => typeof el === 'object' && el !== null && !Array.isArray(el));
+  } catch (e) {
+    return false;
+  }
+}
+
+function isStructurallyValidCompletionsJson(str) {
+  try {
+    const parsed = JSON.parse(str);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch (e) {
+    return false;
+  }
+}
+
+// Verificación estructural post-escritura: excepción de lectura = fallo de
+// verificación (no éxito ambiguo), dispara el mismo camino de rollback que
+// una discrepancia real de contenido.
+function verifyStructuralWrite(newHabitsStr, newCompletionsStr) {
+  try {
+    return localStorage.getItem('habits') === newHabitsStr &&
+      localStorage.getItem('completions') === newCompletionsStr &&
+      isStructurallyValidHabitsJson(localStorage.getItem('habits')) &&
+      isStructurallyValidCompletionsJson(localStorage.getItem('completions'));
+  } catch (e) {
+    return false;
+  }
+}
+
+function restoreOneKey(key, rawValue) {
+  if (rawValue === null) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      return false;
+    }
+    try {
+      return localStorage.getItem(key) === null;
+    } catch (e) {
+      return false;
+    }
+  }
+  return writeAndVerify(key, rawValue);
+}
+
+// Restaura AMBAS claves como una sola unidad lógica.
+function restoreExactRaw(habitsRaw, completionsRaw) {
+  const habitsOk = restoreOneKey('habits', habitsRaw);
+  const completionsOk = restoreOneKey('completions', completionsRaw);
+  return { verified: habitsOk && completionsOk };
+}
+
+function buildSnapshot(habitsRaw, completionsRaw) {
+  return JSON.stringify({
+    snapshotVersion: 1,
+    createdAt: new Date().toISOString(),
+    habitsRaw: habitsRaw,
+    completionsRaw: completionsRaw
+  });
+}
+
+function buildMarker() {
+  return JSON.stringify({ stateVersion: 1, startedAt: new Date().toISOString() });
+}
+
+function parseSnapshotShape(raw) {
+  if (typeof raw !== 'string') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (parsed.snapshotVersion !== 1) return null;
+  if (typeof parsed.createdAt !== 'string' || isNaN(Date.parse(parsed.createdAt))) return null;
+  if (!(parsed.habitsRaw === null || typeof parsed.habitsRaw === 'string')) return null;
+  if (!(parsed.completionsRaw === null || typeof parsed.completionsRaw === 'string')) return null;
+  return parsed;
+}
+
+function parseMarkerShape(raw) {
+  if (typeof raw !== 'string') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (parsed.stateVersion !== 1) return null;
+  if (typeof parsed.startedAt !== 'string' || isNaN(Date.parse(parsed.startedAt))) return null;
+  return parsed;
+}
+
+// Heurística PASIVA de capacidad: solo matemática sobre strings ya en
+// memoria. Nunca escribe una key de prueba ni un relleno. No garantiza
+// que los setItem() reales vayan a tener éxito -- esos, con su propia
+// verificación, son la única fuente de verdad.
+function estimateImportCapacity(newHabitsStr, newCompletionsStr, snapshotStr, markerStr) {
+  const TYPICAL_ORIGIN_QUOTA = 5 * 1024 * 1024;
+  const estimatedBytes = utf8ByteLength(newHabitsStr) + utf8ByteLength(newCompletionsStr) +
+    utf8ByteLength(snapshotStr) + utf8ByteLength(markerStr);
+  return { estimatedBytes, obviouslyTooLarge: estimatedBytes > TYPICAL_ORIGIN_QUOTA };
+}
+
+// Si no se puede leer con confianza, se asume (por seguridad) que SÍ hay una
+// recuperación pendiente: bloquear un import nuevo es preferible a arriesgarse
+// a pisar evidencia de un snapshot/marker que en realidad existe.
+function hasPendingImportRecovery() {
+  const marker = readExactRaw(MARKER_KEY);
+  const snapshot = readExactRaw(SNAPSHOT_KEY);
+  if (!marker.ok || !snapshot.ok) return true;
+  return marker.value !== null || snapshot.value !== null;
+}
+
+// -----------------------------------------------------------------------
+// Reemplazo seguro. Nunca reporta éxito antes de confirmar que el marker
+// quedó realmente ausente. Si algo falla después de escribir datos vivos,
+// intenta rollback; si el rollback no puede verificarse, entra en modo
+// bloqueante en la misma sesión (no espera a un reinicio).
+// -----------------------------------------------------------------------
+function performImportReplacement(validatedData) {
+  if (hasPendingImportRecovery()) {
+    return { ok: false, error: 'Hay una recuperación de importación pendiente; no se puede iniciar un nuevo reemplazo.' };
+  }
+
+  const newHabitsStr = JSON.stringify(validatedData.habits);
+  const newCompletionsStr = JSON.stringify(validatedData.completions);
+  const habitsRawRead = readExactRaw('habits');
+  const completionsRawRead = readExactRaw('completions');
+  if (!habitsRawRead.ok || !completionsRawRead.ok) {
+    return { ok: false, error: 'No se pudo leer el estado actual antes de importar. No se modificaron tus datos.' };
+  }
+  const habitsRaw = habitsRawRead.value;
+  const completionsRaw = completionsRawRead.value;
+  const snapshotStr = buildSnapshot(habitsRaw, completionsRaw);
+  const markerStr = buildMarker();
+
+  const capacity = estimateImportCapacity(newHabitsStr, newCompletionsStr, snapshotStr, markerStr);
+  if (capacity.obviouslyTooLarge) {
+    return { ok: false, error: 'El backup es demasiado grande para el almacenamiento disponible.' };
+  }
+
+  if (!writeAndVerify(SNAPSHOT_KEY, snapshotStr)) {
+    return { ok: false, error: 'No se pudo escribir o verificar el snapshot de seguridad. No se modificaron tus datos.' };
+  }
+
+  if (!writeAndVerify(MARKER_KEY, markerStr)) {
+    return {
+      ok: false,
+      error: 'No se pudo escribir o verificar el marcador de importación. No se modificaron tus datos. ' +
+        'El snapshot de seguridad queda pendiente de limpieza en el próximo inicio.'
+    };
+  }
+
+  const habitsWriteOk = writeAndVerify('habits', newHabitsStr);
+  const completionsWriteOk = habitsWriteOk && writeAndVerify('completions', newCompletionsStr);
+  const structuralOk = habitsWriteOk && completionsWriteOk && verifyStructuralWrite(newHabitsStr, newCompletionsStr);
+
+  if (!structuralOk) {
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, 'No se pudieron escribir o verificar los datos importados.');
+  }
+
+  let markerRemoved = false;
+  try {
+    localStorage.removeItem(MARKER_KEY);
+    markerRemoved = localStorage.getItem(MARKER_KEY) === null;
+  } catch (e) {
+    markerRemoved = false;
+  }
+
+  if (!markerRemoved) {
+    // Decisión humana: los datos nuevos ya están escritos y verificados,
+    // pero el import NO se considera exitoso si el marker sigue presente.
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, 'La importación no pudo cerrarse de forma segura y fue revertida.');
+  }
+
+  // Éxito real. El snapshot se conserva para cleanup en el próximo
+  // startup limpio (estado B), igual que 4.1 hace con storageHealth.
+  loadData();
+  render();
+  return { ok: true };
+}
+
+function finishWithRollbackOrBlock(habitsRaw, completionsRaw, publicMessage) {
+  const restore = restoreExactRaw(habitsRaw, completionsRaw);
+  if (!restore.verified) {
+    enterBlockingRecovery('rollback-failed');
+    return { ok: false, error: `${publicMessage} Además, no se pudo restaurar el estado anterior de forma segura.` };
+  }
+
+  let markerRemoved = false;
+  try {
+    localStorage.removeItem(MARKER_KEY);
+    markerRemoved = localStorage.getItem(MARKER_KEY) === null;
+  } catch (e) {
+    markerRemoved = false;
+  }
+
+  if (!markerRemoved) {
+    enterBlockingRecovery('marker-cleanup-failed-after-rollback');
+    return { ok: false, error: `${publicMessage} Tus datos anteriores se restauraron, pero la app necesita reiniciarse para confirmarlo.` };
+  }
+
+  loadData();
+  render();
+  return { ok: false, error: publicMessage };
+}
+
+// -----------------------------------------------------------------------
+// Startup recovery. Debe correr ANTES de loadData(), porque loadData()
+// puede escribir (migración de createdAt).
+// -----------------------------------------------------------------------
+function recoverInterruptedImport() {
+  const markerRead = readExactRaw(MARKER_KEY);
+  const snapshotFlagRead = readExactRaw(SNAPSHOT_KEY);
+  if (!markerRead.ok || !snapshotFlagRead.ok) {
+    // No se puede determinar con confianza si hay una importación
+    // interrumpida: un startup normal sería inseguro en este caso.
+    return { state: 'blocking-recovery', reason: 'storage-read-failed' };
+  }
+  const markerRaw = markerRead.value;
+  const snapshotExists = snapshotFlagRead.value !== null;
+
+  if (markerRaw === null && !snapshotExists) return { state: 'normal' };
+  if (markerRaw === null && snapshotExists) return { state: 'snapshot-pending-cleanup' };
+
+  const marker = parseMarkerShape(markerRaw);
+  const snapshotRead = readExactRaw(SNAPSHOT_KEY);
+  if (!snapshotRead.ok) {
+    return { state: 'blocking-recovery', reason: 'storage-read-failed' };
+  }
+  const snapshot = parseSnapshotShape(snapshotRead.value);
+  if (!marker || !snapshot) {
+    return { state: 'blocking-recovery', reason: !marker ? 'marker-corrupt' : 'snapshot-corrupt' };
+  }
+
+  const restore = restoreExactRaw(snapshot.habitsRaw, snapshot.completionsRaw);
+  if (!restore.verified) {
+    return { state: 'blocking-recovery', reason: 'restore-verify-failed' };
+  }
+
+  let markerRemoved = false;
+  try {
+    localStorage.removeItem(MARKER_KEY);
+    markerRemoved = localStorage.getItem(MARKER_KEY) === null;
+  } catch (e) {
+    markerRemoved = false;
+  }
+
+  if (!markerRemoved) {
+    return { state: 'blocking-recovery', reason: 'marker-removal-failed-after-restore' };
+  }
+
+  return { state: 'recovered' };
+}
+
+function finishStartupCleanupB() {
+  if (hasStorageCorruption()) return;
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY);
+  } catch (e) {
+    // best effort: queda pendiente para el próximo startup limpio.
+  }
+}
+
+// -----------------------------------------------------------------------
+// Blocking recovery UI: solo lectura, solo diagnóstico. Nunca repara,
+// nunca parsea como válido, nunca modifica storage.
+// -----------------------------------------------------------------------
+function downloadRawRescue(key, raw) {
+  const safeKey = key.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const filename = `habitos-rescate-crudo-${safeKey}-${toLocalDateStr(new Date())}.txt`;
+  const blob = new Blob([raw], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function renderBlockingRecovery(reason) {
+  document.body.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'blocking-recovery';
+
+  const title = document.createElement('h1');
+  title.textContent = 'Recuperación requerida';
+  wrap.appendChild(title);
+
+  const msg = document.createElement('p');
+  msg.textContent = 'Una importación anterior quedó en un estado inconsistente y no se puede continuar ' +
+    'automáticamente. Tus datos no se modificaron ni se repararon. Podés descargar una copia cruda de ' +
+    'diagnóstico de cada pieza disponible más abajo.';
+  wrap.appendChild(msg);
+
+  [
+    ['habits', 'habits (hábitos en vivo)'],
+    ['completions', 'completions (completados en vivo)'],
+    [SNAPSHOT_KEY, 'snapshot de la importación interrumpida'],
+    [MARKER_KEY, 'marcador de la importación interrumpida']
+  ].forEach(([key, label]) => {
+    // Una excepción al leer una fila no debe tirar abajo toda la pantalla
+    // de rescate: se informa esa fila puntual y se sigue con las demás.
+    const rawRead = readExactRaw(key);
+    const row = document.createElement('div');
+    row.className = 'rescue-row';
+    const rowLabel = document.createElement('span');
+    rowLabel.textContent = `${label}: `;
+    row.appendChild(rowLabel);
+
+    if (!rawRead.ok) {
+      const err = document.createElement('span');
+      err.textContent = '(no se pudo leer)';
+      row.appendChild(err);
+    } else if (rawRead.value === null) {
+      const none = document.createElement('span');
+      none.textContent = '(vacío)';
+      row.appendChild(none);
+    } else {
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn-secondary';
+      dlBtn.textContent = 'Descargar rescate crudo';
+      dlBtn.onclick = () => downloadRawRescue(key, rawRead.value);
+      row.appendChild(dlBtn);
+    }
+    wrap.appendChild(row);
+  });
+
+  const disclaimer = document.createElement('p');
+  disclaimer.className = 'rescue-disclaimer';
+  disclaimer.textContent = 'Estos archivos son RESCATE CRUDO / diagnóstico: no son necesariamente un Backup v1 ' +
+    'válido y no deben tratarse como tales.';
+  wrap.appendChild(disclaimer);
+
+  document.body.appendChild(wrap);
+}
+
+function enterBlockingRecovery(reason) {
+  renderBlockingRecovery(reason);
+}
+
+// -----------------------------------------------------------------------
+// UI de import: selector de archivo, preview read-only, segunda
+// confirmación destructiva.
+// -----------------------------------------------------------------------
+function isImportFileSizeOk(file) {
+  return typeof file.size === 'number' && file.size <= MAX_IMPORT_BYTES;
+}
+
+function closeImportPreview() {
+  const container = document.getElementById('importPreview');
+  container.classList.remove('active');
+  container.innerHTML = '';
+  document.getElementById('importFileInput').value = '';
+}
+
+function confirmImportReplacement(validatedData) {
+  if (!confirm('¿Confirmás que querés reemplazar TODOS tus datos actuales con este backup? Esta acción no se puede deshacer.')) {
+    return;
+  }
+  const result = performImportReplacement(validatedData);
+  closeImportPreview();
+  if (!result.ok) {
+    alert(`No se pudo importar: ${result.error}`);
+  }
+}
+
+// Todo dato importado se muestra vía createElement/textContent -- nunca
+// innerHTML con datos importados.
+function renderImportPreview(validation) {
+  const container = document.getElementById('importPreview');
+  container.innerHTML = '';
+
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = 'Importar backup';
+  content.appendChild(title);
+
+  if (!validation.ok) {
+    const errorP = document.createElement('div');
+    errorP.className = 'import-fatal';
+    errorP.textContent = `No se puede importar: ${validation.fatal}`;
+    content.appendChild(errorP);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'btn-secondary';
+    closeBtn.textContent = 'Cerrar';
+    closeBtn.onclick = closeImportPreview;
+    actions.appendChild(closeBtn);
+    content.appendChild(actions);
+  } else {
+    const summary = document.createElement('div');
+    summary.className = 'import-summary';
+    summary.textContent = `${validation.summary.habitsCount} hábitos, ` +
+      `${validation.summary.completionDatesCount} fechas con completados, ` +
+      `${validation.summary.trueEntriesCount} registros completados en total. ` +
+      `Exportado: ${validation.summary.exportedAt}.`;
+    content.appendChild(summary);
+
+    if (validation.warnings.length > 0) {
+      const warnTitle = document.createElement('div');
+      warnTitle.className = 'import-warnings-title';
+      warnTitle.textContent = `Avisos (${validation.warnings.length}):`;
+      content.appendChild(warnTitle);
+      const warnList = document.createElement('ul');
+      warnList.className = 'import-warnings-list';
+      validation.warnings.forEach(w => {
+        const li = document.createElement('li');
+        li.textContent = w;
+        warnList.appendChild(li);
+      });
+      content.appendChild(warnList);
+    }
+
+    const destructiveNote = document.createElement('div');
+    destructiveNote.className = 'import-destructive-note';
+    destructiveNote.textContent = 'Importar este archivo REEMPLAZARÁ todos tus hábitos y días completados actuales. Esta acción no se puede deshacer.';
+    content.appendChild(destructiveNote);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-secondary';
+    cancelBtn.textContent = 'Cancelar';
+    cancelBtn.onclick = closeImportPreview;
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn-primary';
+    confirmBtn.textContent = 'Reemplazar datos';
+    confirmBtn.onclick = () => confirmImportReplacement(validation.data);
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    content.appendChild(actions);
+  }
+
+  container.appendChild(content);
+  container.classList.add('active');
+}
+
+function handleImportFileChange(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+
+  if (hasPendingImportRecovery()) {
+    renderImportPreview({ ok: false, fatal: 'Hay una recuperación de importación pendiente. Reiniciá la app antes de intentar un nuevo import.', warnings: [], summary: null, data: null });
+    return;
+  }
+
+  if (!isImportFileSizeOk(file)) {
+    renderImportPreview({ ok: false, fatal: 'El archivo supera el límite de 5 MB.', warnings: [], summary: null, data: null });
+    return;
+  }
+
+  file.text().then(rawText => {
+    renderImportPreview(validateBackup(rawText));
+  }).catch(() => {
+    renderImportPreview({ ok: false, fatal: 'No se pudo leer el archivo.', warnings: [], summary: null, data: null });
+  });
+}
+
+function openImportPicker() {
+  if (hasPendingImportRecovery()) {
+    alert('Hay una recuperación de importación pendiente. Reiniciá la app antes de intentar un nuevo import.');
+    return;
+  }
+  document.getElementById('importFileInput').click();
+}
+
 function setupEvents() {
   document.getElementById('addBtn').onclick = openModal;
   document.getElementById('cancelBtn').onclick = closeModal;
   document.getElementById('saveBtn').onclick = saveHabit;
   document.getElementById('exportBtn').onclick = exportBackup;
+  document.getElementById('importBtn').onclick = openImportPicker;
+  document.getElementById('importFileInput').onchange = handleImportFileChange;
 
   document.getElementById('prevMonth').onclick = () => {
     state.currentMonth.setMonth(state.currentMonth.getMonth() - 1);
