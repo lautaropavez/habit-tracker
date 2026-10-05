@@ -11,3 +11,5 @@ habitos-loop.json
 /backups/ 
 # Configuración local de Claude Code 
 .claude/settings.local.json
+__pycache__/
+*.pyc
