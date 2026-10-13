@@ -18,7 +18,14 @@ let state = {
   currentMonth: new Date(),
   editingId: null,
   currentView: 'today',
-  storageHealth: { habits: 'missing', completions: 'missing' }
+  storageHealth: { habits: 'missing', completions: 'missing' },
+  // Hábito compartido entre Calendario y Estadísticas, para preservar la
+  // selección al navegar entre ambas vistas. null hasta el primer render
+  // con hábitos disponibles.
+  selectedHabitId: null,
+  // Si true, Estadísticas muestra todos los hábitos en vez de uno solo.
+  // Nunca es el valor por defecto: arranca mostrando un único hábito.
+  statsShowAll: false
 };
 
 function toLocalDateStr(date = new Date()) {
@@ -267,6 +274,41 @@ function isValidIcon(icon) {
 
 function isValidColorHex(color) {
   return typeof color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color);
+}
+
+// Luminancia relativa WCAG de un canal sRGB (0-255).
+function srgbChannelLuminance(c) {
+  const v = c / 255;
+  return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+
+function relativeLuminance(r, g, b) {
+  return 0.2126 * srgbChannelLuminance(r) + 0.7152 * srgbChannelLuminance(g) + 0.0722 * srgbChannelLuminance(b);
+}
+
+function contrastRatio(l1, l2) {
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+// Elige, entre blanco puro y negro puro, el que da mayor contraste WCAG
+// real contra el color de fondo del hábito -- nunca un umbral fijo de
+// "claro/oscuro" que puede fallar para verdes/cian intermedios (ver
+// revisión de UX V2 posta 1). Usar los extremos puros (no un gris como
+// #1a1a1a) es lo que garantiza matemáticamente que, para cualquier color
+// de fondo opaco, al menos una de las dos opciones alcance 4.5:1 -- con
+// un gris intermedio existe un rango de luminancia donde ninguna de las
+// dos alcanza el mínimo AA. Asume que `hex` ya pasó isValidColorHex().
+function getContrastTextColor(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const bgLuminance = relativeLuminance(r, g, b);
+
+  const whiteContrast = contrastRatio(bgLuminance, relativeLuminance(255, 255, 255));
+  const blackContrast = contrastRatio(bgLuminance, relativeLuminance(0, 0, 0));
+  return whiteContrast >= blackContrast ? '#ffffff' : '#000000';
 }
 
 const RESERVED_IDS = ['__proto__', 'constructor', 'prototype'];
@@ -1150,6 +1192,51 @@ function openImportPicker() {
   document.getElementById('importFileInput').click();
 }
 
+// Nombres de vista en el mismo orden que las pestañas/los contenedores del
+// DOM. Única fuente de verdad para traducir índice de pestaña <-> nombre.
+const VIEW_NAMES = ['today', 'calendar', 'stats'];
+const VIEW_IDS = ['todayView', 'calendarView', 'statsView'];
+
+// Centinela de "Mostrar todo" en el selector de Estadísticas. Debe fallar
+// isValidIdFormat() (por el '*') para que NUNCA pueda coincidir con un id
+// real de hábito -- un hábito legítimo podría llamarse "__all__" si
+// alguna vez se usara ese valor, ya que esa cadena sí es un id válido.
+const STATS_SHOW_ALL_VALUE = '*ALL*';
+
+// Cambia de pestaña/vista de forma programática (no solo por click directo
+// en la pestaña), para que la navegación cruzada desde una tarjeta de hábito
+// o desde el calendario reutilice exactamente la misma lógica que las
+// pestañas, en vez de duplicarla.
+function switchToView(viewName) {
+  const idx = VIEW_NAMES.indexOf(viewName);
+  if (idx === -1) return;
+
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(t => t.classList.remove('active'));
+  tabs[idx].classList.add('active');
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(VIEW_IDS[idx]).classList.add('active');
+  state.currentView = viewName;
+
+  if (viewName === 'calendar') { updateCalendarSelect(); renderCalendar(); }
+  if (viewName === 'stats') { updateStatsSelect(); renderStats(); }
+}
+
+// Entradas de navegación cruzada: tocar el nombre de un hábito en "Hoy"
+// abre su calendario; el enlace del calendario abre sus estadísticas.
+// Ambas comparten state.selectedHabitId con los selectores de Calendario
+// y Estadísticas, así la selección se preserva al navegar entre vistas.
+function goToHabitCalendar(habitId) {
+  state.selectedHabitId = habitId;
+  switchToView('calendar');
+}
+
+function goToHabitStats(habitId) {
+  state.selectedHabitId = habitId;
+  state.statsShowAll = false;
+  switchToView('stats');
+}
+
 function setupEvents() {
   document.getElementById('addBtn').onclick = openModal;
   document.getElementById('cancelBtn').onclick = closeModal;
@@ -1158,29 +1245,45 @@ function setupEvents() {
   document.getElementById('importBtn').onclick = openImportPicker;
   document.getElementById('importFileInput').onchange = handleImportFileChange;
 
+  // Construye una fecha nueva con día=1 en vez de mutar currentMonth con
+  // setMonth(): si el día previo era 29/30/31, setMonth() podía "rebotar"
+  // a un mes siguiente que no tiene ese día (ej. 31 ene -1 mes -> 3 mar en
+  // vez de 28/29 feb), avanzando o retrocediendo más de un mes. El día
+  // exacto dentro del mes no se usa para nada en renderCalendar().
   document.getElementById('prevMonth').onclick = () => {
-    state.currentMonth.setMonth(state.currentMonth.getMonth() - 1);
+    state.currentMonth = new Date(state.currentMonth.getFullYear(), state.currentMonth.getMonth() - 1, 1);
     renderCalendar();
   };
   document.getElementById('nextMonth').onclick = () => {
-    state.currentMonth.setMonth(state.currentMonth.getMonth() + 1);
+    state.currentMonth = new Date(state.currentMonth.getFullYear(), state.currentMonth.getMonth() + 1, 1);
     renderCalendar();
   };
 
-  document.getElementById('calendarHabitSelect').onchange = renderCalendar;
+  document.getElementById('calendarHabitSelect').onchange = (e) => {
+    state.selectedHabitId = e.target.value;
+    // Elegir un hábito explícito en el calendario deja de ser "mostrar
+    // todo" en Estadísticas si el usuario navega ahí después.
+    state.statsShowAll = false;
+    renderCalendar();
+  };
+  document.getElementById('calendarGoToStatsBtn').onclick = () => {
+    if (state.habits.length === 0) return;
+    goToHabitStats(state.selectedHabitId);
+  };
+
+  document.getElementById('statsHabitSelect').onchange = (e) => {
+    if (e.target.value === STATS_SHOW_ALL_VALUE) {
+      state.statsShowAll = true;
+    } else {
+      state.statsShowAll = false;
+      state.selectedHabitId = e.target.value;
+    }
+    renderStats();
+  };
 
   const tabs = document.querySelectorAll('.tab');
   tabs.forEach((tab, i) => {
-    tab.onclick = () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-      const views = ['todayView', 'calendarView', 'statsView'];
-      document.getElementById(views[i]).classList.add('active');
-      state.currentView = ['today', 'calendar', 'stats'][i];
-      if (state.currentView === 'calendar') renderCalendar();
-      if (state.currentView === 'stats') renderStats();
-    };
+    tab.onclick = () => switchToView(VIEW_NAMES[i]);
   });
 }
 
@@ -1232,6 +1335,7 @@ function render() {
   renderStorageWarning();
   renderHabits();
   updateCalendarSelect();
+  updateStatsSelect();
   if (state.currentView === 'calendar') renderCalendar();
   if (state.currentView === 'stats') renderStats();
 }
@@ -1258,8 +1362,17 @@ function createHabitCard(habit, today) {
   const info = document.createElement('div');
   info.className = 'habit-info';
   const nameDiv = document.createElement('div');
-  nameDiv.className = 'habit-name';
+  nameDiv.className = 'habit-name habit-name-link';
   nameDiv.textContent = habit.name;
+  nameDiv.setAttribute('role', 'button');
+  nameDiv.tabIndex = 0;
+  nameDiv.onclick = () => goToHabitCalendar(habit.id);
+  nameDiv.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      goToHabitCalendar(habit.id);
+    }
+  };
   const freqDiv = document.createElement('div');
   freqDiv.className = 'habit-freq';
   freqDiv.textContent = `${getFreqText(habit)}${getPeriodProgressText(habit, stats)}`;
@@ -1279,7 +1392,7 @@ function createHabitCard(habit, today) {
   editBtn.dataset.action = 'edit';
   editBtn.dataset.id = habit.id;
   editBtn.disabled = corrupted;
-  editBtn.textContent = '✏️';
+  editBtn.textContent = '🖊️';
 
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'btn btn-delete';
@@ -1599,9 +1712,24 @@ function saveHabit() {
   render();
 }
 
+// Si el hábito seleccionado ya no existe (eliminado) o todavía no hay
+// ninguno elegido, cae de forma determinística al primero disponible.
+// Única función que decide ese fallback -- la consultan tanto el selector
+// de Calendario como el de Estadísticas, para no duplicar el criterio.
+function ensureSelectedHabitId() {
+  if (state.habits.length === 0) {
+    state.selectedHabitId = null;
+    return;
+  }
+  if (!state.selectedHabitId || !state.habits.some(h => h.id === state.selectedHabitId)) {
+    state.selectedHabitId = state.habits[0].id;
+  }
+}
+
 function updateCalendarSelect() {
   const select = document.getElementById('calendarHabitSelect');
-  const prev = select.value;
+  const goToStatsBtn = document.getElementById('calendarGoToStatsBtn');
+  ensureSelectedHabitId();
 
   select.innerHTML = '';
   state.habits.forEach(h => {
@@ -1611,9 +1739,29 @@ function updateCalendarSelect() {
     select.appendChild(option);
   });
 
-  if (prev && state.habits.some(h => h.id === prev)) {
-    select.value = prev;
-  }
+  if (state.selectedHabitId) select.value = state.selectedHabitId;
+  goToStatsBtn.disabled = state.habits.length === 0;
+}
+
+function updateStatsSelect() {
+  const select = document.getElementById('statsHabitSelect');
+  ensureSelectedHabitId();
+
+  select.innerHTML = '';
+  if (state.habits.length === 0) return;
+
+  state.habits.forEach(h => {
+    const option = document.createElement('option');
+    option.value = h.id;
+    option.textContent = `${h.icon} ${h.name}`;
+    select.appendChild(option);
+  });
+  const allOption = document.createElement('option');
+  allOption.value = STATS_SHOW_ALL_VALUE;
+  allOption.textContent = 'Mostrar todo';
+  select.appendChild(allOption);
+
+  select.value = state.statsShowAll ? STATS_SHOW_ALL_VALUE : state.selectedHabitId;
 }
 
 function renderCalendar() {
@@ -1624,7 +1772,14 @@ function renderCalendar() {
     return;
   }
 
-  const habitId = document.getElementById('calendarHabitSelect').value;
+  const habitId = state.selectedHabitId;
+  const habit = state.habits.find(h => h.id === habitId);
+  // Color de relleno de los días completados: el propio color del hábito
+  // si es válido, o un verde de respaldo si por algún motivo no lo es
+  // (nunca debería faltar para un hábito ya persistido, pero el dato
+  // persistido se trata como no confiable, igual que en el resto del archivo).
+  const fillColor = habit && isValidColorHex(habit.color) ? habit.color : '#4CAF50';
+  const fillTextColor = getContrastTextColor(fillColor);
   const year = state.currentMonth.getFullYear();
   const month = state.currentMonth.getMonth();
 
@@ -1654,7 +1809,7 @@ function renderCalendar() {
     const isCompleted = state.completions[dateStr]?.[habitId];
     const isFuture = date > today;
 
-    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
+    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
   }
 
   for (let day = 1; day <= daysInMonth; day++) {
@@ -1665,7 +1820,7 @@ function renderCalendar() {
     const isFuture = date > today;
 
     html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
   }
 
   const remainingDays = 42 - (startDay + daysInMonth);
@@ -1676,7 +1831,7 @@ data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
     const isFuture = date > today;
 
     html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
   }
 
   grid.innerHTML = html;
@@ -1686,6 +1841,15 @@ data-date="${dateStr}" data-future="${isFuture}">${day}</div>`;
   // arriba, para no exponer una superficie de inyección de atributos.
   document.querySelectorAll('.calendar-day').forEach(cell => {
     cell.dataset.habit = habitId;
+    // Reemplaza el punto decorativo anterior: el día completado rellena
+    // todo el cuadrado con el color del hábito, con el texto del número
+    // recalculado para seguir siendo legible sobre ese color exacto.
+    if (cell.classList.contains('completed')) {
+      cell.style.background = fillColor;
+      cell.style.color = fillTextColor;
+      // El ✓ (marcado en el propio HTML del día) y el aria-label dan una
+      // señal de estado que no depende únicamente del color de relleno.
+    }
     cell.onclick = () => {
       if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
@@ -1797,15 +1961,21 @@ function createStatsCard(habit) {
 }
 
 function renderStats() {
-  const container = document.getElementById('statsView');
+  const container = document.getElementById('statsCardsContainer');
 
   if (state.habits.length === 0) {
     container.innerHTML = '<div class="empty-state">Agrega hábitos para ver estadísticas</div>';
     return;
   }
 
+  // Por defecto, un único hábito (el seleccionado); "Mostrar todo" es la
+  // única forma de ver todas las tarjetas a la vez -- nunca el default.
+  const habitsToShow = state.statsShowAll
+    ? state.habits
+    : state.habits.filter(h => h.id === state.selectedHabitId);
+
   container.innerHTML = '';
-  state.habits.forEach(habit => {
+  habitsToShow.forEach(habit => {
     container.appendChild(createStatsCard(habit));
   });
 }
