@@ -11,8 +11,8 @@ Secuencia, estado, dependencias y criterios generales de salida. Las decisiones 
 | Posta 4.1: protección ante `localStorage` corrupto | Completa y publicada |
 | H1: ajuste del alcance del adversarial tester | Completo y publicado (`3e50e7a`) |
 | H2: Harness V2 (documentación y gobernanza) | En curso. Falta incorporar los cambios manuales en `.claude/**` y la revisión documental |
-| 5a | Pendiente |
-| 5b | Pendiente (depende de 5a) |
+| 5a | Completa y publicada |
+| 5b | Completa y publicada |
 | Conversor Loop → backup JSON v1 | Pendiente (depende de 5b) |
 | Importar datos reales de Loop | Pendiente (Gate B) |
 | IndexedDB, PWA y backups adicionales | Sin prioridad inmediata |
@@ -46,7 +46,7 @@ H2 → 5a → 5b → conversor Loop → Gate B para datos reales → después, I
 
 - **Flujo previsto:** 5a export → 5b import seguro → conversor local de SQLite de Loop a backup JSON v1 → tests sintéticos → Gate B → recién entonces usar los `.db` reales → preview → import real.
 - **Criterios de salida:** el conversor corre en local, produce un JSON válido para `validateBackup` y nada real llega a Git, fixtures, logs, capturas ni scratchpads compartidos.
-- Cualquier lectura de un `.db` real requiere Gate B (`SECURITY.md`).
+- Cualquier lectura de un `.db` real requiere Gate B (`SECURITY.md`). El área privada para ese material (`/.loop-private/`) y la sanitización de diagnósticos del conversor están documentadas en `SECURITY.md`, sección 6.
 - Gate B también debe verificar hábitos cuantitativos (ver `Future Product Backlog`, ítem 3) antes de decidir la conversión final de cada hábito.
 
 ## Analytics & Charts (futuro, posterior a PWA)

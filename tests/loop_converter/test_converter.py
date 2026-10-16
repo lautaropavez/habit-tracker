@@ -10,6 +10,8 @@ real.
 import io
 import json
 import os
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -72,15 +74,15 @@ class FrequencyTests(TempDbTestCase):
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
         self.assertEqual(len(ctx.exception.problems), 1)
-        self.assertIn('no soportada', ctx.exception.problems[0])
-        self.assertIn('UNSUPPORTED', ctx.exception.problems[0])
+        self.assertIn(converter.CODE_UNSUPPORTED_FREQUENCY, ctx.exception.problems[0])
+        self.assertIn('habit_id=1', ctx.exception.problems[0])
 
     def test_unsupported_freq_count_out_of_range(self):
         conn = self.make_db()
         fixtures.insert_habit(conn, 1, 'Demasiado', 31, 7)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
-        self.assertIn('UNSUPPORTED', ctx.exception.problems[0])
+        self.assertIn(converter.CODE_UNSUPPORTED_FREQUENCY, ctx.exception.problems[0])
 
 
 class IdTests(TempDbTestCase):
@@ -97,7 +99,7 @@ class IdTests(TempDbTestCase):
         fixtures.insert_habit(conn, 7, 'Segundo', 1, 1)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
-        self.assertTrue(any('duplicado' in p for p in ctx.exception.problems))
+        self.assertTrue(any(converter.CODE_DUPLICATE_GENERATED_ID in p for p in ctx.exception.problems))
 
 
 class NameTests(TempDbTestCase):
@@ -113,7 +115,7 @@ class NameTests(TempDbTestCase):
         fixtures.insert_habit(conn, 1, 'Malo\x07control', 1, 1)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
-        self.assertIn('caracteres de control', ctx.exception.problems[0])
+        self.assertIn(converter.CODE_NAME_CONTROL_CHARS, ctx.exception.problems[0])
 
     def test_empty_name_rejected(self):
         conn = self.make_db()
@@ -172,7 +174,7 @@ class FutureCompletionTests(TempDbTestCase):
         fixtures.insert_repetition(conn, 1, future_ms)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn, today_local_str='2026-01-01')
-        self.assertTrue(any('futura' in p for p in ctx.exception.problems))
+        self.assertTrue(any(converter.CODE_FUTURE_COMPLETION in p for p in ctx.exception.problems))
 
 
 class UnsupportedCategoryTests(TempDbTestCase):
@@ -181,14 +183,14 @@ class UnsupportedCategoryTests(TempDbTestCase):
         fixtures.insert_habit(conn, 1, 'Viejo habito', 1, 1, archived=1)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
-        self.assertTrue(any('archivado' in p for p in ctx.exception.problems))
+        self.assertTrue(any(converter.CODE_ARCHIVED_HABIT in p for p in ctx.exception.problems))
 
     def test_quantitative_habit_unsupported(self):
         conn = self.make_db()
         fixtures.insert_habit(conn, 1, 'Tomar agua', 1, 1, habit_type=1)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
-        self.assertTrue(any('cuantitativo' in p for p in ctx.exception.problems))
+        self.assertTrue(any(converter.CODE_UNSUPPORTED_QUANTITATIVE in p for p in ctx.exception.problems))
 
 
 class MultipleProblemsTests(TempDbTestCase):
@@ -201,8 +203,8 @@ class MultipleProblemsTests(TempDbTestCase):
             converter.convert(conn)
         self.assertEqual(len(ctx.exception.problems), 2)
         joined = ' | '.join(ctx.exception.problems)
-        self.assertIn('archivado', joined)
-        self.assertIn('UNSUPPORTED', joined)
+        self.assertIn(converter.CODE_ARCHIVED_HABIT, joined)
+        self.assertIn(converter.CODE_UNSUPPORTED_FREQUENCY, joined)
 
 
 class AtomicityTests(TempDbTestCase):
@@ -293,6 +295,408 @@ class CliOutputTests(TempDbTestCase):
 
         self.assertEqual(rc, 2)
         self.assertIn('ya existe', err.getvalue())
+        with open(self.out_path, encoding='utf-8') as f:
+            self.assertEqual(f.read(), original_content)
+
+
+class PrivacyDiagnosticsTests(TempDbTestCase):
+    """PRIV-2: ningun mensaje de error/diagnostico (ni en convert() ni en
+    la salida de la CLI) debe contener el nombre real del habito ni
+    fechas/timestamps crudos. Usa un nombre sintetico claramente
+    identificable para poder detectar una fuga con un simple assertNotIn."""
+
+    SENTINEL_NAME = 'SENTINEL_PRIVATE_NAME_DO_NOT_LEAK_7f3a'
+
+    def test_unsupported_frequency_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 11, self.SENTINEL_NAME, 1, 2)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_UNSUPPORTED_FREQUENCY, joined)
+        self.assertIn('habit_id=11', joined)
+
+    def test_archived_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 12, self.SENTINEL_NAME, 1, 1, archived=1)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_ARCHIVED_HABIT, joined)
+        self.assertIn('habit_id=12', joined)
+
+    def test_quantitative_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 13, self.SENTINEL_NAME, 1, 1, habit_type=5)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_UNSUPPORTED_QUANTITATIVE, joined)
+        self.assertIn('habit_id=13', joined)
+
+    def test_control_chars_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 14, self.SENTINEL_NAME + '\x07', 1, 1)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_NAME_CONTROL_CHARS, joined)
+
+    def test_future_completion_does_not_leak_name_or_date(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 15, self.SENTINEL_NAME, 1, 1)
+        future_ms = fixtures.local_ms(datetime(2099, 7, 4, 12, 0, 0))
+        fixtures.insert_repetition(conn, 15, future_ms)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-01-01')
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertNotIn('2099', joined)
+        self.assertIn(converter.CODE_FUTURE_COMPLETION, joined)
+
+    def test_cli_abort_stderr_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 16, self.SENTINEL_NAME, 1, 1, archived=1)
+        conn.close()
+
+        with redirect_stderr(io.StringIO()) as err:
+            rc = converter.main(['--input', self.db_path, '--output', self.out_path])
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(os.path.exists(self.out_path))
+        self.assertNotIn(self.SENTINEL_NAME, err.getvalue())
+        self.assertIn(converter.CODE_ARCHIVED_HABIT, err.getvalue())
+
+    def test_cli_error_messages_use_basename_not_full_path(self):
+        """Las rutas de entrada/salida en los mensajes de error de la CLI
+        no deben incluir el directorio completo (puede contener datos
+        personales, ej. el nombre de usuario del sistema)."""
+        missing_input = os.path.join(self._tmpdir.name, 'no-existe.db')
+        with redirect_stderr(io.StringIO()) as err:
+            rc = converter.main(['--input', missing_input, '--output', self.out_path])
+        self.assertEqual(rc, 2)
+        self.assertNotIn(self._tmpdir.name, err.getvalue())
+        self.assertIn('no-existe.db', err.getvalue())
+
+    def test_cli_already_exists_error_does_not_leak_full_output_path(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Meditar', 1, 1)
+        conn.close()
+        with open(self.out_path, 'w', encoding='utf-8') as f:
+            f.write('{}')
+
+        with redirect_stderr(io.StringIO()) as err:
+            rc = converter.main(['--input', self.db_path, '--output', self.out_path])
+
+        self.assertEqual(rc, 2)
+        self.assertNotIn(self._tmpdir.name, err.getvalue())
+
+    def test_cli_invalid_sqlite_input_does_not_leak_path_or_raw_exception(self):
+        """Un archivo que existe pero no es un SQLite valido: sqlite3
+        abre el file handle sin error (open_readonly no lo detecta) y
+        falla recien al consultarlo dentro de convert(); ese fallo debe
+        quedar sanitizado por el handler generico de main(), nunca como
+        traceback ni mensaje crudo con la ruta completa."""
+        not_a_db = os.path.join(self._tmpdir.name, 'not-a-database.db')
+        with open(not_a_db, 'w', encoding='utf-8') as f:
+            f.write('esto no es un sqlite valido')
+
+        with redirect_stderr(io.StringIO()) as err:
+            rc = converter.main(['--input', not_a_db, '--output', self.out_path])
+
+        self.assertEqual(rc, 2)
+        stderr_value = err.getvalue()
+        self.assertNotIn(self._tmpdir.name, stderr_value)
+        self.assertNotIn('not-a-database.db', stderr_value)
+        self.assertNotIn('Traceback', stderr_value)
+        self.assertIn('fallo inesperado', stderr_value)
+
+    def test_null_timestamp_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 17, self.SENTINEL_NAME, 1, 1)
+        conn.execute(
+            f'INSERT INTO {schema.TABLE_REPETITIONS} '
+            f'({schema.COL_REPETITION_HABIT_ID}, {schema.COL_REPETITION_TIMESTAMP}, {schema.COL_REPETITION_VALUE}) '
+            'VALUES (?, ?, ?)',
+            (17, None, schema.VALUE_COMPLETED),
+        )
+        conn.commit()
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_NULL_TIMESTAMP, joined)
+
+    def test_invalid_name_length_does_not_leak_name(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 18, self.SENTINEL_NAME * 2000, 1, 1)  # excede NAME_MAX_CODEPOINTS
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_INVALID_NAME_LENGTH, joined)
+
+    def test_non_integer_habit_id_is_not_reflected_raw(self):
+        """Fila corrupta/malformada con id de texto (SQLite es de
+        tipado dinamico): debe rechazarse explicitamente como
+        LOOP_INVALID_HABIT_ID *antes* de llegar al chequeo de
+        archivado -- nunca se reflejo el valor crudo ni se trata con
+        str()."""
+        conn = self.make_db(without_pk=True)
+        fixtures.insert_habit(conn, self.SENTINEL_NAME, 'Cualquiera', 1, 1, archived=1)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_INVALID_LOOP_ID, joined)
+        self.assertIn('<non-numeric>', joined)
+
+    def test_null_habit_id_is_rejected_and_not_reflected_raw(self):
+        """Un habit_id NULL (columna sin NOT NULL, fila corrupta) debe
+        rechazarse igual que uno de texto -- nunca tratarse como caso
+        especial ni convertirse implicitamente a 'None' via str()."""
+        conn = self.make_db(without_pk=True)
+        fixtures.insert_habit(conn, None, self.SENTINEL_NAME, 1, 1)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_INVALID_LOOP_ID, joined)
+        self.assertIn('<non-numeric>', joined)
+
+    def test_non_integer_frequency_does_not_crash_and_is_not_reflected_raw(self):
+        """freq_num no entero no debe escapar como TypeError (perdiendo
+        la lista completa de problemas) ni reflejarse crudo."""
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 19, 'Valido', 1, 1)  # para confirmar que se sigue reportando junto al otro
+        conn.execute(
+            f'INSERT INTO {schema.TABLE_HABITS} '
+            f'({schema.COL_HABIT_ID}, {schema.COL_HABIT_NAME}, {schema.COL_HABIT_FREQ_NUM}, '
+            f'{schema.COL_HABIT_FREQ_DEN}, {schema.COL_HABIT_ARCHIVED}, {schema.COL_HABIT_TYPE}) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (20, self.SENTINEL_NAME, self.SENTINEL_NAME, 7, 0, 0),
+        )
+        conn.commit()
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertNotIn(self.SENTINEL_NAME, joined)
+        self.assertIn(converter.CODE_UNSUPPORTED_FREQUENCY, joined)
+        self.assertIn('habit_id=20', joined)
+
+    def test_cli_unrecognized_argument_does_not_leak_raw_token(self):
+        """argparse por defecto refleja los tokens crudos recibidos en su
+        mensaje de error; si el usuario olvida comillas en una ruta con
+        espacios, un fragmento de esa ruta (con datos personales, ej. el
+        nombre de usuario) podria terminar en stderr."""
+        with redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as ctx:
+                converter.main([
+                    '--input', self.db_path,
+                    '--output', self.out_path,
+                    '--bogus', f'C:\\Users\\{self.SENTINEL_NAME}\\loop.db',
+                ])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertNotIn(self.SENTINEL_NAME, err.getvalue())
+
+
+class GitignoreTests(unittest.TestCase):
+    """Verifica, contra el .gitignore real del repo (via `git
+    check-ignore`, solo lectura), que el directorio privado de Loop y
+    los auxiliares de SQLite quedan ignorados, y que los archivos
+    legitimos del proyecto siguen siendo visibles para Git."""
+
+    REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+    def _is_ignored(self, relative_path):
+        """0 = ignorado, 1 = no ignorado; cualquier otro codigo (ej. 128,
+        "not a git repository") es un fallo del propio chequeo y debe
+        hacer fallar el test en vez de leerse como "no ignorado" en
+        silencio. --no-index evalua solo el patron, independientemente
+        de si el archivo ya esta trackeado (un archivo trackeado nunca
+        se reporta como ignorado sin este flag, sin importar el patron)."""
+        result = subprocess.run(
+            ['git', 'check-ignore', '--quiet', '--no-index', relative_path],
+            cwd=self.REPO_ROOT,
+        )
+        if result.returncode not in (0, 1):
+            self.fail(f'git check-ignore devolvio un codigo inesperado ({result.returncode}) para {relative_path!r}')
+        return result.returncode == 0
+
+    def test_private_loop_directory_is_ignored(self):
+        self.assertTrue(self._is_ignored('.loop-private/anything.txt'))
+        self.assertTrue(self._is_ignored('.loop-private/OUTPUT/converted.json'))
+        self.assertTrue(self._is_ignored('.loop-private/ORIGINAL/real.db'))
+
+    def test_sqlite_wal_auxiliary_files_are_ignored(self):
+        for name in ('x.db-wal', 'x.db-shm', 'x.db-journal',
+                     'x.sqlite-wal', 'x.sqlite-shm', 'x.sqlite-journal',
+                     'x.sqlite3-wal', 'x.sqlite3-shm', 'x.sqlite3-journal'):
+            self.assertTrue(self._is_ignored(name), name)
+
+    def test_loop_convert_temp_files_are_ignored(self):
+        """Temporal atomico de write_backup_atomic() (tools/loop_habits_
+        to_json.py): la regla '.loop_convert_*' ya esta aplicada a mano
+        en .gitignore (ver docs/SECURITY.md, seccion 6) y este test
+        confirma que git la reconoce."""
+        self.assertTrue(self._is_ignored('.loop_convert_abc123'))
+        self.assertTrue(self._is_ignored('some/dir/.loop_convert_abc123'))
+
+    def test_legitimate_project_files_remain_visible(self):
+        for name in ('js/app.js', 'css/styles.css', 'index.html',
+                     'docs/ROADMAP.md', 'tools/loop_habits_to_json.py',
+                     'tests/loop_converter/test_converter.py'):
+            self.assertFalse(self._is_ignored(name), name)
+
+
+class LoopIdValidationTests(unittest.TestCase):
+    """is_valid_loop_id() en aislamiento. SQLite nunca puede devolver un
+    bool real desde una columna INTEGER (lo normaliza a 0/1 como int),
+    asi que la exclusion de bool solo puede verificarse llamando la
+    funcion directamente, no insertando una fila real."""
+
+    def test_accepts_plain_int(self):
+        self.assertTrue(converter.is_valid_loop_id(5))
+        self.assertTrue(converter.is_valid_loop_id(0))
+        self.assertTrue(converter.is_valid_loop_id(-1))
+
+    def test_rejects_bool(self):
+        self.assertFalse(converter.is_valid_loop_id(True))
+        self.assertFalse(converter.is_valid_loop_id(False))
+
+    def test_rejects_none_and_text(self):
+        self.assertFalse(converter.is_valid_loop_id(None))
+        self.assertFalse(converter.is_valid_loop_id('7'))
+
+
+class OrphanedRepetitionTests(TempDbTestCase):
+    def test_orphaned_repetition_detected_and_aborts(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        conn.execute(
+            f'INSERT INTO {schema.TABLE_REPETITIONS} '
+            f'({schema.COL_REPETITION_HABIT_ID}, {schema.COL_REPETITION_TIMESTAMP}, {schema.COL_REPETITION_VALUE}) '
+            'VALUES (?, ?, ?)',
+            (99, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), schema.VALUE_COMPLETED),
+        )
+        conn.commit()
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        self.assertEqual(len(ctx.exception.problems), 1)
+        self.assertIn(converter.CODE_ORPHANED_REPETITION, ctx.exception.problems[0])
+        self.assertIn('habit_id=99', ctx.exception.problems[0])
+
+    def test_matching_repetition_is_not_flagged_as_orphan(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)))
+        data = converter.convert(conn, today_local_str='2026-06-01')
+        self.assertEqual(len(data['habits']), 1)
+
+    def test_invalid_habit_id_with_matching_repetition_is_not_also_flagged_as_orphan(self):
+        """known_habit_ids se construye a partir de las filas crudas de
+        Habits, sin filtrar por validez, antes de evaluar huerfanas: una
+        repeticion que referencia el mismo id invalido (no entero) que
+        su propio habito no debe contarse ademas como huerfana -- debe
+        reportarse una sola vez, como LOOP_INVALID_HABIT_ID."""
+        conn = self.make_db(without_pk=True)
+        fixtures.insert_habit(conn, PrivacyDiagnosticsTests.SENTINEL_NAME, 'Cualquiera', 1, 1)
+        conn.execute(
+            f'INSERT INTO {schema.TABLE_REPETITIONS} '
+            f'({schema.COL_REPETITION_HABIT_ID}, {schema.COL_REPETITION_TIMESTAMP}, {schema.COL_REPETITION_VALUE}) '
+            'VALUES (?, ?, ?)',
+            (PrivacyDiagnosticsTests.SENTINEL_NAME, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), schema.VALUE_COMPLETED),
+        )
+        conn.commit()
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        self.assertEqual(len(ctx.exception.problems), 1)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertIn(converter.CODE_INVALID_LOOP_ID, joined)
+        self.assertNotIn(converter.CODE_ORPHANED_REPETITION, joined)
+        self.assertNotIn(PrivacyDiagnosticsTests.SENTINEL_NAME, joined)
+
+
+class ReadonlyUriTests(unittest.TestCase):
+    """Construccion del URI file: de solo lectura, a nivel de funcion
+    pura. '?' no se puede probar con un archivo real en este sistema
+    operativo (caracter invalido en nombres de archivo de Windows);
+    esta es la unica forma de ejercitar los tres caracteres de manera
+    determinista en cualquier plataforma."""
+
+    def test_reserved_characters_are_percent_encoded(self):
+        uri = converter.build_readonly_uri('C:/fake/pa?th#with%chars/loop.db')
+        self.assertIn('%3F', uri)
+        self.assertIn('%23', uri)
+        self.assertIn('%25', uri)
+        self.assertTrue(uri.endswith('?mode=ro'))
+        self.assertNotIn('pa?th', uri)
+        self.assertNotIn('with#chars', uri)
+
+    def test_windows_drive_and_separators_stay_readable(self):
+        uri = converter.build_readonly_uri('C:\\Users\\example\\loop.db')
+        self.assertIn('C:\\Users\\example\\loop.db', uri)
+
+
+class ReadonlyUriRealFileTests(unittest.TestCase):
+    """Round-trip real sobre un archivo cuyo nombre contiene '#' y '%'
+    (caracteres validos en Windows, a diferencia de '?')."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.db_path = os.path.join(self._tmpdir.name, 'lo#op%db.db')
+        self.out_path = os.path.join(self._tmpdir.name, 'out.json')
+
+    def test_special_char_path_converts_successfully(self):
+        conn = fixtures.create_synthetic_db(self.db_path)
+        fixtures.insert_habit(conn, 1, 'Meditar', 1, 1)
+        conn.close()
+
+        rc = converter.main(['--input', self.db_path, '--output', self.out_path])
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(self.out_path))
+
+    def test_special_char_path_is_genuinely_readonly(self):
+        conn = fixtures.create_synthetic_db(self.db_path)
+        fixtures.insert_habit(conn, 1, 'Meditar', 1, 1)
+        conn.close()
+
+        ro_conn = converter.open_readonly(self.db_path)
+        self.addCleanup(ro_conn.close)
+        with self.assertRaises(sqlite3.OperationalError):
+            ro_conn.execute(
+                f"INSERT INTO {schema.TABLE_HABITS} "
+                f"({schema.COL_HABIT_ID}, {schema.COL_HABIT_NAME}, {schema.COL_HABIT_FREQ_NUM}, "
+                f"{schema.COL_HABIT_FREQ_DEN}, {schema.COL_HABIT_ARCHIVED}, {schema.COL_HABIT_TYPE}) "
+                "VALUES (99, 'x', 1, 1, 0, 0)"
+            )
+
+
+class WriteBackupAtomicDirectTests(unittest.TestCase):
+    """Cubre directamente la rama FileExistsError de
+    write_backup_atomic(). El camino via CLI (test_cli_does_not_
+    overwrite_existing_output) nunca llega a ejercitarla de verdad: el
+    chequeo temprano de main() ya corta antes de invocar esta funcion,
+    asi que esa rama quedaba sin cobertura propia."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.out_path = os.path.join(self._tmpdir.name, 'out.json')
+
+    def test_file_exists_error_does_not_overwrite_existing_output(self):
+        original_content = '{"ya existia": true}'
+        with open(self.out_path, 'w', encoding='utf-8') as f:
+            f.write(original_content)
+
+        with self.assertRaises(FileExistsError):
+            converter.write_backup_atomic(self.out_path, {'schemaVersion': 1})
+
         with open(self.out_path, encoding='utf-8') as f:
             self.assertEqual(f.read(), original_content)
 
