@@ -38,16 +38,31 @@ COL_REPETITION_VALUE = 'value'
 # (milisegundos UTC desde epoch). No verificado contra un .db real.
 TIMESTAMP_UNIT = 'milliseconds_utc'
 
-# Valor de `value` que Loop usa para marcar una repeticion como
-# completada manualmente. No verificado contra un .db real. Cualquier
-# otro valor se trata como "no completado" (no genera una entrada true),
-# nunca como un error en si mismo.
-VALUE_COMPLETED = 2
+# Valores conocidos de `value` en Repetitions para habitos booleanos.
+# Decision humana (ticket "LOOP CONVERTER - VALIDACIONES PREVIAS A
+# MIGRACION"): no se infieren por aritmetica (ej. "valor positivo =>
+# completado"); se distinguen explicitamente. Cualquier valor fuera de
+# este conjunto (NULL, texto, u otro entero) es invalido -> fail-closed,
+# nunca se asume "no completado" por defecto. No verificado contra un
+# .db real mas alla de la estructura de columnas confirmada en Gate B-1
+# (ver docs/SECURITY.md, seccion 7); el significado semantico de cada
+# codigo es la suposicion que este conjunto documenta.
+VALUE_NO = 0
+VALUE_YES_AUTO = 1
+VALUE_YES_MANUAL = 2
+VALUE_SKIP = 3
+VALUE_UNKNOWN = -1
+VALUE_COMPLETED = VALUE_YES_MANUAL  # alias retrocompatible, ver VALUE_YES_MANUAL
+KNOWN_REPETITION_VALUES = frozenset({VALUE_NO, VALUE_YES_AUTO, VALUE_YES_MANUAL, VALUE_SKIP, VALUE_UNKNOWN})
 
-# Valor de `type` que distingue un habito booleano (si/no) de uno
-# cuantitativo/medible. Cualquier valor distinto de BOOLEAN se trata
-# como cuantitativo -> UNSUPPORTED. No verificado contra un .db real.
+# Valores conocidos de `type` en Habits: booleano (si/no) o
+# cuantitativo/medible. Decision humana (mismo ticket): un `type` NULL,
+# de texto, o un entero fuera de este conjunto es invalido -> fail-closed,
+# nunca se asume booleano por defecto ni cuantitativo por eliminacion.
+# No verificado contra un .db real.
 HABIT_TYPE_BOOLEAN = 0
+HABIT_TYPE_QUANTITATIVE = 1
+KNOWN_HABIT_TYPES = frozenset({HABIT_TYPE_BOOLEAN, HABIT_TYPE_QUANTITATIVE})
 
 # --- Explicitamente NO implementado hasta Gate B -----------------------
 

@@ -329,7 +329,7 @@ class PrivacyDiagnosticsTests(TempDbTestCase):
 
     def test_quantitative_does_not_leak_name(self):
         conn = self.make_db()
-        fixtures.insert_habit(conn, 13, self.SENTINEL_NAME, 1, 1, habit_type=5)
+        fixtures.insert_habit(conn, 13, self.SENTINEL_NAME, 1, 1, habit_type=schema.HABIT_TYPE_QUANTITATIVE)
         with self.assertRaises(converter.ConversionAborted) as ctx:
             converter.convert(conn)
         joined = ' | '.join(ctx.exception.problems)
@@ -571,6 +571,183 @@ class LoopIdValidationTests(unittest.TestCase):
     def test_rejects_none_and_text(self):
         self.assertFalse(converter.is_valid_loop_id(None))
         self.assertFalse(converter.is_valid_loop_id('7'))
+
+
+class HabitTypeValidationTests(unittest.TestCase):
+    """is_valid_habit_type() en aislamiento, igual que
+    LoopIdValidationTests: la exclusion de bool solo puede verificarse
+    llamando la funcion directamente."""
+
+    def test_accepts_known_types(self):
+        self.assertTrue(converter.is_valid_habit_type(schema.HABIT_TYPE_BOOLEAN))
+        self.assertTrue(converter.is_valid_habit_type(schema.HABIT_TYPE_QUANTITATIVE))
+
+    def test_rejects_bool(self):
+        self.assertFalse(converter.is_valid_habit_type(True))
+        self.assertFalse(converter.is_valid_habit_type(False))
+
+    def test_rejects_none_text_and_out_of_range_int(self):
+        self.assertFalse(converter.is_valid_habit_type(None))
+        self.assertFalse(converter.is_valid_habit_type('0'))
+        self.assertFalse(converter.is_valid_habit_type(5))
+        self.assertFalse(converter.is_valid_habit_type(-1))
+
+
+class RepetitionValueValidationTests(unittest.TestCase):
+    """is_valid_repetition_value() en aislamiento, mismo criterio que
+    HabitTypeValidationTests/LoopIdValidationTests."""
+
+    def test_accepts_all_known_values(self):
+        for value in (
+            schema.VALUE_NO, schema.VALUE_YES_AUTO, schema.VALUE_YES_MANUAL,
+            schema.VALUE_SKIP, schema.VALUE_UNKNOWN,
+        ):
+            self.assertTrue(converter.is_valid_repetition_value(value))
+
+    def test_rejects_bool(self):
+        self.assertFalse(converter.is_valid_repetition_value(True))
+        self.assertFalse(converter.is_valid_repetition_value(False))
+
+    def test_rejects_none_text_and_out_of_range_int(self):
+        self.assertFalse(converter.is_valid_repetition_value(None))
+        self.assertFalse(converter.is_valid_repetition_value('yes'))
+        self.assertFalse(converter.is_valid_repetition_value(42))
+
+
+class HabitTypeConversionTests(TempDbTestCase):
+    """Cobertura de integracion: un Habits.type invalido debe abortar
+    con CODE_INVALID_HABIT_TYPE, nunca confundirse con
+    CODE_UNSUPPORTED_QUANTITATIVE (que es solo para type=1 valido)."""
+
+    def test_null_habit_type_is_fatal_and_distinct_from_quantitative(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1, habit_type=None)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertIn(converter.CODE_INVALID_HABIT_TYPE, joined)
+        self.assertNotIn(converter.CODE_UNSUPPORTED_QUANTITATIVE, joined)
+
+    def test_text_habit_type_is_fatal(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1, habit_type='boolean')
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        self.assertTrue(any(converter.CODE_INVALID_HABIT_TYPE in p for p in ctx.exception.problems))
+
+    def test_out_of_range_habit_type_is_fatal_and_distinct_from_quantitative(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1, habit_type=5)
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertIn(converter.CODE_INVALID_HABIT_TYPE, joined)
+        self.assertNotIn(converter.CODE_UNSUPPORTED_QUANTITATIVE, joined)
+
+
+class RepetitionValueConversionTests(TempDbTestCase):
+    """Cobertura de integracion de los 5 valores conocidos de
+    Repetitions.value y de los casos invalidos -- ninguno debe tratarse
+    en silencio como 'no completado' salvo VALUE_NO, que es el unico
+    valor conocido con ese significado explicito."""
+
+    def test_yes_manual_and_yes_auto_both_count_as_completed(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=schema.VALUE_YES_MANUAL,
+        )
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 6, 8, 0, 0)), value=schema.VALUE_YES_AUTO,
+        )
+        data = converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(data['completions']['2026-01-05']['loop-1'])
+        self.assertTrue(data['completions']['2026-01-06']['loop-1'])
+
+    def test_no_value_is_not_completed_and_not_an_error(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=schema.VALUE_NO,
+        )
+        data = converter.convert(conn, today_local_str='2026-06-01')
+        self.assertEqual(data['completions'], {})
+        self.assertEqual(len(data['habits']), 1)
+
+    def test_skip_value_aborts_instead_of_silently_not_completed(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=schema.VALUE_SKIP,
+        )
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(any(converter.CODE_SPECIAL_REPETITION_VALUE in p for p in ctx.exception.problems))
+
+    def test_unknown_value_aborts_instead_of_silently_not_completed(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=schema.VALUE_UNKNOWN,
+        )
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(any(converter.CODE_SPECIAL_REPETITION_VALUE in p for p in ctx.exception.problems))
+
+    def test_null_value_is_fatal(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        conn.execute(
+            f'INSERT INTO {schema.TABLE_REPETITIONS} '
+            f'({schema.COL_REPETITION_HABIT_ID}, {schema.COL_REPETITION_TIMESTAMP}, {schema.COL_REPETITION_VALUE}) '
+            'VALUES (?, ?, ?)',
+            (1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), None),
+        )
+        conn.commit()
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(any(converter.CODE_INVALID_REPETITION_VALUE in p for p in ctx.exception.problems))
+
+    def test_text_value_is_fatal(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value='yes',
+        )
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(any(converter.CODE_INVALID_REPETITION_VALUE in p for p in ctx.exception.problems))
+
+    def test_out_of_range_value_is_fatal(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Valido', 1, 1)
+        fixtures.insert_repetition(
+            conn, 1, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=42,
+        )
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertTrue(any(converter.CODE_INVALID_REPETITION_VALUE in p for p in ctx.exception.problems))
+
+
+class ArchivedAndSpecialStatesAreNeverSilentTests(TempDbTestCase):
+    """Cobertura explicita del punto 5 del ticket: ni un habito
+    archivado ni una repeticion en estado especial deben desaparecer
+    del dataset sin reportarse -- siempre terminan en `problems`,
+    nunca excluidos en silencio."""
+
+    def test_archived_habit_with_skip_repetition_reports_both_problems(self):
+        conn = self.make_db()
+        fixtures.insert_habit(conn, 1, 'Archivado', 1, 1, archived=1)
+        fixtures.insert_habit(conn, 2, 'Con skip', 1, 1)
+        fixtures.insert_repetition(
+            conn, 2, fixtures.local_ms(datetime(2026, 1, 5, 8, 0, 0)), value=schema.VALUE_SKIP,
+        )
+        with self.assertRaises(converter.ConversionAborted) as ctx:
+            converter.convert(conn, today_local_str='2026-06-01')
+        self.assertEqual(len(ctx.exception.problems), 2)
+        joined = ' | '.join(ctx.exception.problems)
+        self.assertIn(converter.CODE_ARCHIVED_HABIT, joined)
+        self.assertIn(converter.CODE_SPECIAL_REPETITION_VALUE, joined)
 
 
 class OrphanedRepetitionTests(TempDbTestCase):

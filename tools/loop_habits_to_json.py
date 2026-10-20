@@ -73,6 +73,9 @@ CODE_INVALID_TIMESTAMP = 'LOOP_INVALID_TIMESTAMP'
 CODE_FUTURE_COMPLETION = 'LOOP_FUTURE_COMPLETION'
 CODE_INVALID_LOOP_ID = 'LOOP_INVALID_HABIT_ID'
 CODE_ORPHANED_REPETITION = 'LOOP_ORPHANED_REPETITION'
+CODE_INVALID_HABIT_TYPE = 'LOOP_INVALID_HABIT_TYPE'
+CODE_INVALID_REPETITION_VALUE = 'LOOP_INVALID_REPETITION_VALUE'
+CODE_SPECIAL_REPETITION_VALUE = 'LOOP_SPECIAL_REPETITION_VALUE'
 
 
 def _safe_int(value):
@@ -135,6 +138,25 @@ def is_valid_loop_id(value):
     de generar el id de destino o de usarse en cualquier otra
     operacion -- nunca se convierte con str() en silencio."""
     return type(value) is int
+
+
+def is_valid_habit_type(value):
+    """True solo si `value` es exactamente un int dentro del conjunto
+    conocido de Habits.type (ver loop_schema.KNOWN_HABIT_TYPES). Nunca
+    bool, nunca texto, nunca None, nunca un entero fuera de ese
+    conjunto -- un type invalido o desconocido es fatal, nunca se
+    asume booleano por defecto ni cuantitativo por eliminacion."""
+    return type(value) is int and value in schema.KNOWN_HABIT_TYPES
+
+
+def is_valid_repetition_value(value):
+    """True solo si `value` es exactamente un int dentro del conjunto
+    conocido de Repetitions.value (ver
+    loop_schema.KNOWN_REPETITION_VALUES). Nunca bool, nunca texto,
+    nunca None, nunca un entero fuera de ese conjunto -- un valor
+    invalido o desconocido es fatal, nunca se trata en silencio como
+    'no completado'."""
+    return type(value) is int and value in schema.KNOWN_REPETITION_VALUES
 
 
 def is_valid_id_format(value):
@@ -282,7 +304,11 @@ def convert(conn, today_local_str=None):
             problems.append(problem(CODE_ARCHIVED_HABIT, loop_id))
             continue
 
-        if habit_type is not None and habit_type != schema.HABIT_TYPE_BOOLEAN:
+        if not is_valid_habit_type(habit_type):
+            problems.append(problem(CODE_INVALID_HABIT_TYPE, loop_id))
+            continue
+
+        if habit_type == schema.HABIT_TYPE_QUANTITATIVE:
             problems.append(problem(CODE_UNSUPPORTED_QUANTITATIVE, loop_id))
             continue
 
@@ -342,16 +368,34 @@ def convert(conn, today_local_str=None):
                 habit_had_problem = True
                 continue
 
-            if value == schema.VALUE_COMPLETED:
-                # Multiples repeticiones completadas el mismo dia local
-                # (ej. por un efecto de borde horario) se funden en una
-                # sola entrada true: el resultado es identico y no hay
-                # perdida de informacion ni ambiguedad real que reportar.
+            if not is_valid_repetition_value(value):
+                problems.append(problem(CODE_INVALID_REPETITION_VALUE, loop_id))
+                habit_had_problem = True
+                continue
+
+            if value in (schema.VALUE_YES_MANUAL, schema.VALUE_YES_AUTO):
+                # Ambas variantes (manual o automatica) representan el
+                # habito como completado ese dia. Multiples repeticiones
+                # completadas el mismo dia local (ej. por un efecto de
+                # borde horario) se funden en una sola entrada true: el
+                # resultado es identico y no hay perdida de informacion
+                # ni ambiguedad real que reportar.
                 completed_dates.add(date_str)
                 if earliest_date is None or date_str < earliest_date:
                     earliest_date = date_str
-            # value != VALUE_COMPLETED: repeticion no completada, no
-            # aporta una entrada true y no es un error.
+            elif value == schema.VALUE_NO:
+                # Explicitamente no completado: no aporta una entrada
+                # true, y no es un error.
+                pass
+            else:
+                # VALUE_SKIP o VALUE_UNKNOWN: estados especiales que el
+                # formato Backup v1 actual no puede representar sin
+                # perder la distincion frente a "no completado". Fail-
+                # closed explicito en vez de tratarlos en silencio como
+                # equivalentes a VALUE_NO.
+                problems.append(problem(CODE_SPECIAL_REPETITION_VALUE, loop_id))
+                habit_had_problem = True
+                continue
 
         if habit_had_problem:
             continue
