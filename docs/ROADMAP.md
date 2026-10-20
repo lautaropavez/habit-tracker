@@ -14,6 +14,7 @@ Secuencia, estado, dependencias y criterios generales de salida. Las decisiones 
 | 5a | Completa y publicada |
 | 5b | Completa y publicada |
 | Conversor Loop → backup JSON v1 | Pendiente (depende de 5b) |
+| Backup v2 (contrato cuantitativo) | Propuesto, no secuenciado. Contrato documentado y tests sintéticos preparados; sin implementar |
 | Importar datos reales de Loop | Pendiente (Gate B) |
 | IndexedDB, PWA y backups adicionales | Sin prioridad inmediata |
 | Analytics & Charts | Futuro / no iniciado, posterior a PWA |
@@ -49,6 +50,66 @@ H2 → 5a → 5b → conversor Loop → Gate B para datos reales → después, I
 - Cualquier lectura de un `.db` real requiere Gate B (`SECURITY.md`). El área privada para ese material (`/.loop-private/`) y la sanitización de diagnósticos del conversor están documentadas en `SECURITY.md`, sección 6.
 - Gate B también debe verificar hábitos cuantitativos (ver `Future Product Backlog`, ítem 3) antes de decidir la conversión final de cada hábito.
 
+## Backup v2 (propuesta de contrato — pendiente de implementación y decisión humana)
+
+- **Propósito:** representar hábitos cuantitativos (caso prioritario: Estudio/duración en minutos, ver `Future Product Backlog`, ítem 3) sin perder información, sin romper la compatibilidad con Backup v1.
+- **Estado:** CONTRATO PROPUESTO. Tests sintéticos preparados y corridos contra el `validateBackup()` real (evidencia abajo). No implementado: `js/app.js` no se modificó en esta posta.
+- **Depende de:** nada para el contrato en sí. La migración real de hábitos cuantitativos de Loop sigue dependiendo de Gate B (ver `Conversor Loop`, arriba).
+
+### Contrato JSON propuesto
+
+- **Raíz:** agrega `quantities` a los campos de v1 (`schemaVersion`, `exportedAt`, `habits`, `completions`). `schemaVersion` pasa a `2`.
+- **Cada hábito** conserva exactamente los campos de v1 (`id`, `name`, `icon`, `color`, `freq`, `freqCount`, `freqPeriod`, `createdAt`) y agrega:
+  - `kind`: `"boolean"` o `"quantitative"`, obligatorio. Reemplaza la ausencia de tipo de v1 (donde todo hábito es implícitamente booleano).
+  - Solo si `kind === "quantitative"`:
+    - `unit`: obligatorio, debe ser exactamente `"minutes"` (única unidad soportada por ahora; cualquier otro valor es fatal, nunca se adivina ni convierte).
+    - `target`: `{ minutes: <entero >= 1> }` o `null`. Representa el objetivo CONFIGURADO actual, nunca un valor realizado histórico. La relación exacta de `target.minutes` con `freqPeriod` queda explícitamente sin definir (igual que ya marca `Future Product Backlog`, ítem 3) — no se inventa aquí.
+- **`completions`** (sin cambio de forma): sigue existiendo solo para hábitos `kind === "boolean"`. Una entrada que referencia un hábito `quantitative` es fatal (ambigüedad de esquema).
+- **`quantities`** (nuevo): `{ "YYYY-MM-DD": { [habitId]: { actualMinutes: <entero >= 0>, plannedMinutes: <entero >= 0> | null } } }`.
+  - Solo puede referenciar hábitos `kind === "quantitative"`; una entrada que referencia un hábito `boolean` es fatal (criterio inverso al de arriba).
+  - La AUSENCIA de una entrada para una fecha+hábito es distinta de `actualMinutes: 0`: ausencia = sin registro ese día; `0` = registro explícito de cero minutos. Nunca se infiere una de la otra.
+  - `plannedMinutes: null` significa "no verificable / desconocido"; nunca se omite la clave para representar eso.
+  - Cota de sanidad propuesta, no confirmada: `actualMinutes`/`plannedMinutes` ≤ 1440 (minutos en un día), ya que cada entrada es por día. `target.minutes` no tiene cota propuesta porque su período no está definido.
+
+### Compatibilidad con Backup v1
+
+- Un archivo `schemaVersion: 1` debe seguir importándose exactamente igual que hoy. Al importarlo, cada hábito se trata como `kind: "boolean"` implícito.
+- **Pendiente de decisión:** si el estado interno (`state.habits`) agrega `kind` explícito a cada hábito migrado desde v1, o se mantiene implícito mientras no exista ningún hábito cuantitativo real.
+- **Pendiente de decisión:** si un nuevo export siempre usa `schemaVersion: 2`, o solo cuando existe al menos un hábito `quantitative` (y se mantiene v1 en caso contrario).
+
+### Validación estricta (extiende la de v1, ver `PROJECT_CONTEXT.md` sección 5b)
+
+- Mismas reglas de v1 para los campos compartidos (IDs, nombre, color, frecuencia, fecha de creación, límites de tamaño).
+- `kind` obligatorio, exactamente `"boolean"` o `"quantitative"` — cualquier otro valor, `null` o ausencia es fatal.
+- Para `kind === "quantitative"`: `unit` obligatorio y exactamente `"minutes"`; `target` ausente, `null`, o `{ minutes: entero >= 1 }` — cualquier otra forma es fatal.
+- Fechas de `quantities` con la misma regla que las de `completions` (formato real, no futuras).
+- Referencias cruzadas: toda clave de `quantities`/`completions` debe apuntar a un `habitId` existente del `kind` correspondiente — huérfanas o de tipo incorrecto son fatales, mismo criterio fail-closed que v1.
+- `actualMinutes`/`plannedMinutes`/`target.minutes`: enteros genuinos (nunca booleanos, nunca texto, nunca float) — mismo patrón que `is_valid_loop_id`/`is_valid_repetition_value` del conversor Python (`type(value) is int`, excluye bool).
+- Ningún dato incompatible se descarta en silencio: un archivo que no puede representarse fielmente en v2 se rechaza por completo (fail-closed), igual que hoy en v1.
+
+### Atomicidad de importación (extiende 5b)
+
+- Misma secuencia que hoy (`PROJECT_CONTEXT.md` sección 5b: snapshot → marker → escribir → verificación estructural → borrar marker), extendida a una tercera clave de `localStorage`, `quantities`, en paralelo exacto a `habits`/`completions`.
+- Un archivo inválido (v1 o v2) no debe modificar ninguna de las tres claves — hoy esto ya es cierto para `habits`/`completions`; falta implementar la tercera clave con la misma disciplina antes de que `quantities` pueda escribirse de verdad.
+- No implementado en esta posta: ni `validateBackup`, ni `buildSnapshot`/`restoreExactRaw`/`performImportReplacement` fueron modificados.
+
+**Nota de cierre (posta de implementación posterior a esta propuesta):** el snapshot de recuperación ahora incluye una tercera clave (`quantitiesRaw`) y usa `snapshotVersion: 2`. Un snapshot `snapshotVersion: 1` que hubiera quedado pendiente de una importación interrumpida de *antes* de este cambio **no se recupera automáticamente**: `parseSnapshotShape()` exige coincidencia exacta de forma y rechaza cualquier otra, por lo que cae a recuperación bloqueante (motivo `snapshot-corrupt`) en vez de completar el campo faltante en silencio. En ese modo, `habits`/`completions`/`quantities` vigentes no se tocan y el rescate crudo de cada clave (incluida `quantities`) sigue disponible para descarga manual. No se implementó ninguna migración automática de snapshots viejos; verificado con un test sintético dedicado.
+
+### Tests sintéticos: evidencia obtenida esta posta
+
+Se armó y corrió un harness Node temporal (en el scratchpad de la sesión, no comprometido al repo — ver "Sin decidir" más abajo) que carga `js/app.js` real dentro de una sandbox (Node `vm`, mock mínimo de `localStorage`, proxy no-op para `document`/`navigator`), sin reimplementar su lógica. Resultado contra el código actual, sin ninguna modificación productiva:
+
+- **7 PASS** (compatibilidad v1 intacta; la whitelist actual de `validateBackup` ya rechaza por sí sola campos v2 colados en un payload v1, como `quantities` o `kind`, sin que nadie lo haya pedido explícitamente).
+- **5 FAIL esperados (rojo)**, los que definen el objetivo de la próxima implementación: un backup v2 completo no se importa; una referencia huérfana en `quantities` no se detecta como tal (hoy falla antes, por campo raíz desconocido); `completions` no distingue todavía un hábito `quantitative` mal referenciado; `unit` distinto de `"minutes"` no se valida; `actualMinutes` no entero no se valida. 0 discrepancias respecto a lo esperado.
+
+### Pendiente de decisión humana antes de implementar
+
+1. ¿El estado interno agrega `kind` a los hábitos migrados de v1, o se mantiene implícito?
+2. ¿Un nuevo export usa siempre v2, o v1 cuando no hay hábitos cuantitativos?
+3. ¿Qué significa exactamente `target.minutes` en relación a `freqPeriod`?
+4. ¿Se confirma la cota de sanidad de 1440 minutos/día para `actualMinutes`/`plannedMinutes`?
+5. Ya registrado en "Sin decidir" (abajo): si habrá harness de test permanente en el repo y con qué runner — esta posta no lo resuelve; por eso el harness Node de esta posta quedó en el scratchpad de la sesión, no en el repo.
+
 ## Analytics & Charts (futuro, posterior a PWA)
 
 - **Propósito:** aprovechar el historial real de hábitos para incorporar estadísticas y visualizaciones útiles, evitando gráficos decorativos o métricas sin una pregunta concreta.
@@ -71,7 +132,7 @@ Este bloque no es una secuencia comprometida ni una SPEC. Son candidatos aprobad
 
 1. **Notas/contexto por hábito y fecha.** Permitir asociar una nota breve a una entrada (ejemplos: viaje, enfermedad, entrenamiento liviano, contexto excepcional), preservando potencial analítico futuro.
 2. **Skip / pausa justificada.** Distinguir conceptualmente entre completado, incumplido y omitido, contemplando vacaciones, enfermedad, lesión u otras excepciones. Un skip no debe convertirse automáticamente en un éxito; el impacto exacto sobre estadísticas y rachas se define antes de implementar.
-3. **Hábitos cuantitativos.** Además de hábitos binarios, evaluar objetivos medibles (páginas, minutos, pasos, litros, sesiones); unidades, metas y relación con frecuencias quedan por definir.
+3. **Hábitos cuantitativos.** Además de hábitos binarios, evaluar objetivos medibles (páginas, minutos, pasos, litros, sesiones); unidades, metas y relación con frecuencias quedan por definir. Ver la propuesta de contrato detallada en "Backup v2", más arriba.
    - **Caso prioritario inicial: Estudio / duración.** Unidad canónica interna: minutos enteros. La UI debe permitir ingresar horas y minutos, convirtiendo automáticamente a minutos totales al guardar y de minutos totales a horas+minutos al mostrar (ej.: 2 h 35 min → 155 min almacenados; 90 min → mostrar 1 h 30 min; 185 min → mostrar 3 h 5 min; 240 min → mostrar 4 h). Evitar horas y minutos como dos fuentes de verdad independientes.
    - **Histórico manual.** Existen registros históricos reales de estudio con duración real y, en algunos casos, duración planificada/estimada (ejemplo: 2025-10-01 real 1h35min / planificado 4h). El usuario no quiere cargarlos día por día: se planifica una futura importación batch. Como mínimo preservar `actualMinutes`; cuando exista dato planificado y el modelo final lo permita razonablemente, preservar también `plannedMinutes` (ejemplo conceptual: `{actualMinutes: 95, plannedMinutes: 240}`). El schema definitivo (Backup v2 o equivalente) no está definido todavía; Backup v1 no se modifica por esta decisión.
    - **Relación con Gate B / Loop.** El usuario cree, sin confirmar, que su base real de Loop puede registrar Estudio de forma cuantitativa (horas/cantidad) en vez de binaria. Antes de migrar la base real de Loop, Gate B debe verificar específicamente para hábitos cuantitativos: cómo los identifica Loop, valor almacenado, unidad real, precisión, codificación, significado del valor, comportamiento de timestamps/fechas y cualquier metadata necesaria. No asumir que Loop almacena horas. No convertir un valor cuantitativo a boolean true/false perdiendo información (el Conversor Loop → backup JSON v1 ya trata hoy los hábitos cuantitativos como UNSUPPORTED y aborta identificándolos, en vez de convertirlos silenciosamente). Si Gate B confirma historial cuantitativo relevante, el soporte de hábitos cuantitativos debe implementarse antes de la migración histórica definitiva de esos hábitos.

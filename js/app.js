@@ -10,6 +10,7 @@ const BACKUP_V1_ICONS = ['🧘', '💪', '🏃', '📚', '✍️', '🥗', '💧
 let state = {
   habits: [],
   completions: {},
+  quantities: {},
   selectedIcon: ICONS[0],
   selectedColor: COLORS[0],
   selectedFreq: 'daily',
@@ -18,7 +19,7 @@ let state = {
   currentMonth: new Date(),
   editingId: null,
   currentView: 'today',
-  storageHealth: { habits: 'missing', completions: 'missing' },
+  storageHealth: { habits: 'missing', completions: 'missing', quantities: 'missing' },
   // Hábito compartido entre Calendario y Estadísticas, para preservar la
   // selección al navegar entre ambas vistas. null hasta el primer render
   // con hábitos disponibles.
@@ -139,7 +140,9 @@ function inferCreatedAt(habitId, todayStr) {
 // true si cualquiera de las dos claves persistidas quedo marcada 'corrupt'
 // en la ultima carga real.
 function hasStorageCorruption() {
-  return state.storageHealth.habits === 'corrupt' || state.storageHealth.completions === 'corrupt';
+  return state.storageHealth.habits === 'corrupt' ||
+    state.storageHealth.completions === 'corrupt' ||
+    state.storageHealth.quantities === 'corrupt';
 }
 
 function loadData() {
@@ -148,7 +151,8 @@ function loadData() {
   // anterior, y reload/loadData repetido sea deterministico.
   state.habits = [];
   state.completions = {};
-  state.storageHealth = { habits: 'missing', completions: 'missing' };
+  state.quantities = {};
+  state.storageHealth = { habits: 'missing', completions: 'missing', quantities: 'missing' };
 
   const h = localStorage.getItem('habits');
   if (h !== null) {
@@ -188,10 +192,30 @@ function loadData() {
     }
   }
 
+  const q = localStorage.getItem('quantities');
+  if (q !== null) {
+    try {
+      const parsed = JSON.parse(q);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        state.quantities = parsed;
+        state.storageHealth.quantities = 'valid';
+      } else {
+        state.storageHealth.quantities = 'corrupt';
+      }
+    } catch (e) {
+      state.storageHealth.quantities = 'corrupt';
+    }
+  }
+
+  // Backup v2: todo hábito sin `kind` explícito (legado v1) se normaliza
+  // como booleano -- decisión humana, ver docs/ROADMAP.md, sección
+  // "Backup v2". Solo rellena el default si `kind` está ausente; nunca
+  // sobreescribe un `kind` ya presente.
   state.habits = state.habits.map(hb => ({
     freq: 'daily',
     freqCount: 7,
     freqPeriod: 'week',
+    kind: 'boolean',
     ...hb
   }));
 
@@ -219,6 +243,7 @@ function saveData() {
   }
   localStorage.setItem('habits', JSON.stringify(state.habits));
   localStorage.setItem('completions', JSON.stringify(state.completions));
+  localStorage.setItem('quantities', JSON.stringify(state.quantities));
   return { ok: true };
 }
 
@@ -266,6 +291,42 @@ function isValidFreqPeriod(freqPeriod) {
 
 function isValidFreqCount(n) {
   return Number.isInteger(n) && n >= 1 && n <= 30;
+}
+
+// Backup v2: tipo de hábito. Reemplaza la ausencia de tipo de v1, donde
+// todo hábito es implícitamente booleano.
+const VALID_KIND = ['boolean', 'quantitative'];
+// Única unidad soportada por ahora (decisión humana, ver
+// docs/ROADMAP.md, sección "Backup v2"). Cualquier otro valor es fatal,
+// nunca se adivina ni se convierte.
+const VALID_UNIT = ['minutes'];
+
+function isValidKind(kind) {
+  return VALID_KIND.includes(kind);
+}
+
+function isValidUnit(unit) {
+  return VALID_UNIT.includes(unit);
+}
+
+// Entero genuino (nunca bool, nunca texto, nunca float) -- mismo patrón
+// que is_valid_loop_id/is_valid_repetition_value del conversor Python.
+function isSafeNonNegativeInt(n) {
+  return Number.isSafeInteger(n) && n >= 0;
+}
+
+function isSafePositiveInt(n) {
+  return Number.isSafeInteger(n) && n >= 1;
+}
+
+// target: objetivo CONFIGURADO actual por día de registro (decisión
+// humana: independiente de freqPeriod), nunca un valor realizado
+// histórico. null = sin objetivo configurado.
+function isValidTarget(target) {
+  if (target === null) return true;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return false;
+  const keys = Object.keys(target);
+  return keys.length === 1 && keys[0] === 'minutes' && isSafePositiveInt(target.minutes);
 }
 
 function isValidIcon(icon) {
@@ -336,10 +397,10 @@ function generateHabitId() {
 }
 
 // Preflight de export: valida TODO el estado vivo contra el contrato
-// Backup v1 antes de exportar. Nunca repara, trunca ni normaliza el dato
+// Backup v2 antes de exportar. Nunca repara, trunca ni normaliza el dato
 // inválido -- solo lo reporta y aborta. Las únicas normalizaciones
 // permitidas (completions false y fechas vacías) ocurren después, en
-// buildBackupV1(), nunca acá.
+// buildBackupV2(), nunca acá.
 function validateExportState() {
   if (hasStorageCorruption()) {
     return { ok: false, error: 'No se puede exportar mientras los datos guardados estén dañados.' };
@@ -348,6 +409,7 @@ function validateExportState() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const seenIds = new Set();
+  const habitKindById = new Map();
 
   for (let i = 0; i < state.habits.length; i++) {
     const habit = state.habits[i];
@@ -385,6 +447,17 @@ function validateExportState() {
     if (!isValidFreqCount(habit.freqCount)) {
       return { ok: false, error: `${label}: cantidad de frecuencia inválida (1 a 30).` };
     }
+    if (!isValidKind(habit.kind)) {
+      return { ok: false, error: `${label}: tipo (kind) inválido.` };
+    }
+    if (habit.kind === 'quantitative') {
+      if (!isValidUnit(habit.unit)) {
+        return { ok: false, error: `${label}: unidad inválida.` };
+      }
+      if (!isValidTarget(habit.target)) {
+        return { ok: false, error: `${label}: objetivo (target) inválido.` };
+      }
+    }
 
     const createdAtDate = parseLocalDate(habit.createdAt);
     if (!createdAtDate) {
@@ -393,6 +466,8 @@ function validateExportState() {
     if (createdAtDate > today) {
       return { ok: false, error: `${label}: fecha de creación futura.` };
     }
+
+    habitKindById.set(habit.id, habit.kind);
   }
 
   if (!state.completions || typeof state.completions !== 'object' || Array.isArray(state.completions)) {
@@ -411,13 +486,52 @@ function validateExportState() {
       if (entry[habitId] !== true && entry[habitId] !== false) {
         return { ok: false, error: `Valor de completado inválido para "${dateKey}".` };
       }
-      // Solo las entradas true sobreviven al export (ver buildBackupV1);
+      // Solo las entradas true sobreviven al export (ver buildBackupV2);
       // una entrada true que referencia un hábito inexistente sería
       // exportada como dato incoherente, así que se trata como fatal.
       // Una entrada false huérfana nunca llega al export, así que no
       // bloquea el preflight.
       if (entry[habitId] === true && !seenIds.has(habitId)) {
         return { ok: false, error: `Completado huérfano: "${dateKey}" referencia un hábito inexistente.` };
+      }
+      if (entry[habitId] === true && habitKindById.get(habitId) !== 'boolean') {
+        return { ok: false, error: `Completado "${dateKey}" referencia un hábito que no es booleano.` };
+      }
+    }
+  }
+
+  if (!state.quantities || typeof state.quantities !== 'object' || Array.isArray(state.quantities)) {
+    return { ok: false, error: 'Registro de cantidades inválido.' };
+  }
+
+  for (const dateKey in state.quantities) {
+    if (!isValidDateStr(dateKey)) {
+      return { ok: false, error: `Fecha de cantidad inválida: "${dateKey}".` };
+    }
+    const entry = state.quantities[dateKey];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, error: `Registro de cantidades inválido para "${dateKey}".` };
+    }
+    for (const habitId in entry) {
+      const value = entry[habitId];
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return { ok: false, error: `Valor de cantidad inválido para "${dateKey}".` };
+      }
+      const valueKeys = Object.keys(value);
+      if (valueKeys.length !== 2 || !('actualMinutes' in value) || !('plannedMinutes' in value)) {
+        return { ok: false, error: `Campos de cantidad inválidos para "${dateKey}".` };
+      }
+      if (!isSafeNonNegativeInt(value.actualMinutes)) {
+        return { ok: false, error: `actualMinutes inválido para "${dateKey}".` };
+      }
+      if (value.plannedMinutes !== null && !isSafeNonNegativeInt(value.plannedMinutes)) {
+        return { ok: false, error: `plannedMinutes inválido para "${dateKey}".` };
+      }
+      if (!seenIds.has(habitId)) {
+        return { ok: false, error: `Cantidad huérfana: "${dateKey}" referencia un hábito inexistente.` };
+      }
+      if (habitKindById.get(habitId) !== 'quantitative') {
+        return { ok: false, error: `Cantidad "${dateKey}" referencia un hábito que no es cuantitativo.` };
       }
     }
   }
@@ -428,17 +542,25 @@ function validateExportState() {
 // Pura: asume que validateExportState() ya dio ok. Construye el objeto
 // final campo por campo (nunca copia el hábito vivo completo por spread),
 // para que ninguna propiedad extra accidental llegue al backup.
-function buildBackupV1() {
-  const habits = state.habits.map(h => ({
-    id: h.id,
-    name: h.name,
-    icon: h.icon,
-    color: h.color,
-    freq: h.freq,
-    freqCount: h.freqCount,
-    freqPeriod: h.freqPeriod,
-    createdAt: h.createdAt
-  }));
+function buildBackupV2() {
+  const habits = state.habits.map(h => {
+    const out = {
+      id: h.id,
+      name: h.name,
+      icon: h.icon,
+      color: h.color,
+      freq: h.freq,
+      freqCount: h.freqCount,
+      freqPeriod: h.freqPeriod,
+      createdAt: h.createdAt,
+      kind: h.kind
+    };
+    if (h.kind === 'quantitative') {
+      out.unit = h.unit;
+      out.target = h.target;
+    }
+    return out;
+  });
 
   const completions = {};
   for (const dateKey in state.completions) {
@@ -451,11 +573,29 @@ function buildBackupV1() {
     }
   }
 
+  // A diferencia de completions, la AUSENCIA de una entrada en
+  // `quantities` es distinta de un registro explícito de 0 minutos
+  // (decisión humana, ver docs/ROADMAP.md): cada entrada presente en
+  // state.quantities se exporta tal cual, sin filtrar por valor.
+  const quantities = {};
+  for (const dateKey in state.quantities) {
+    const entry = state.quantities[dateKey];
+    const habitIds = Object.keys(entry);
+    if (habitIds.length > 0) {
+      const cleanEntry = {};
+      habitIds.forEach(id => {
+        cleanEntry[id] = { actualMinutes: entry[id].actualMinutes, plannedMinutes: entry[id].plannedMinutes };
+      });
+      quantities[dateKey] = cleanEntry;
+    }
+  }
+
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
     habits,
-    completions
+    completions,
+    quantities
   };
 }
 
@@ -468,7 +608,7 @@ async function exportBackup() {
     return;
   }
 
-  const backup = buildBackupV1();
+  const backup = buildBackupV2();
   const json = JSON.stringify(backup, null, 2);
   const now = new Date();
   const filename = `habitos-backup-${toLocalDateStr(now)}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}.json`;
@@ -558,7 +698,14 @@ function validateBackup(rawText) {
     return fail('La raíz del backup debe ser un objeto.');
   }
 
-  const ALLOWED_ROOT = ['schemaVersion', 'exportedAt', 'habits', 'completions'];
+  if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) {
+    return fail('schemaVersion no es 1 ni 2.');
+  }
+  const schemaVersion = parsed.schemaVersion;
+
+  const ALLOWED_ROOT = schemaVersion === 1
+    ? ['schemaVersion', 'exportedAt', 'habits', 'completions']
+    : ['schemaVersion', 'exportedAt', 'habits', 'completions', 'quantities'];
   const rootKeys = Object.keys(parsed);
   const unknownRoot = rootKeys.filter(k => !ALLOWED_ROOT.includes(k));
   if (unknownRoot.length > 0) return fail(`Campo desconocido en la raíz: "${unknownRoot[0]}".`);
@@ -566,7 +713,6 @@ function validateBackup(rawText) {
     if (!(k in parsed)) return fail(`Falta el campo raíz "${k}".`);
   }
 
-  if (parsed.schemaVersion !== 1) return fail('schemaVersion no es 1.');
   if (typeof parsed.exportedAt !== 'string' || isNaN(Date.parse(parsed.exportedAt))) {
     return fail('exportedAt no es una fecha ISO válida.');
   }
@@ -577,9 +723,15 @@ function validateBackup(rawText) {
   if (!parsed.completions || typeof parsed.completions !== 'object' || Array.isArray(parsed.completions)) {
     return fail('"completions" debe ser un objeto.');
   }
+  if (schemaVersion === 2) {
+    if (!parsed.quantities || typeof parsed.quantities !== 'object' || Array.isArray(parsed.quantities)) {
+      return fail('"quantities" debe ser un objeto.');
+    }
+  }
 
-  const ALLOWED_HABIT = ['id', 'name', 'icon', 'color', 'freq', 'freqCount', 'freqPeriod', 'createdAt'];
+  const BASE_HABIT_FIELDS = ['id', 'name', 'icon', 'color', 'freq', 'freqCount', 'freqPeriod', 'createdAt'];
   const seenIds = new Set();
+  const habitKindById = new Map();
   const validHabits = [];
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -589,10 +741,24 @@ function validateBackup(rawText) {
     const label = `hábito #${i + 1}`;
     if (!habit || typeof habit !== 'object' || Array.isArray(habit)) return fail(`${label}: registro inválido.`);
 
+    // v1 no tiene "kind": todo hábito v1 se trata como booleano
+    // (decisión humana, ver docs/ROADMAP.md, sección "Backup v2").
+    // v2 exige "kind" explícito, y amplía los campos permitidos del
+    // hábito solo para el caso cuantitativo.
+    let kind = 'boolean';
+    let allowedHabitFields = BASE_HABIT_FIELDS;
+    if (schemaVersion === 2) {
+      if (!isValidKind(habit.kind)) return fail(`${label}: tipo (kind) inválido.`);
+      kind = habit.kind;
+      allowedHabitFields = kind === 'quantitative'
+        ? [...BASE_HABIT_FIELDS, 'kind', 'unit', 'target']
+        : [...BASE_HABIT_FIELDS, 'kind'];
+    }
+
     const habitKeys = Object.keys(habit);
-    const unknownHabit = habitKeys.filter(k => !ALLOWED_HABIT.includes(k));
+    const unknownHabit = habitKeys.filter(k => !allowedHabitFields.includes(k));
     if (unknownHabit.length > 0) return fail(`${label}: campo desconocido "${unknownHabit[0]}".`);
-    for (const k of ALLOWED_HABIT) {
+    for (const k of allowedHabitFields) {
       if (!(k in habit)) return fail(`${label}: falta el campo "${k}".`);
     }
 
@@ -609,16 +775,27 @@ function validateBackup(rawText) {
     if (!isValidFreqPeriod(habit.freqPeriod)) return fail(`${label}: período de frecuencia inválido.`);
     if (!isValidFreqCount(habit.freqCount)) return fail(`${label}: cantidad de frecuencia inválida (1 a 30).`);
 
+    if (kind === 'quantitative') {
+      if (!isValidUnit(habit.unit)) return fail(`${label}: unidad inválida.`);
+      if (!isValidTarget(habit.target)) return fail(`${label}: objetivo (target) inválido.`);
+    }
+
     const createdAtDate = parseLocalDate(habit.createdAt);
     if (!createdAtDate) return fail(`${label}: fecha de creación inválida.`);
     if (createdAtDate > today) return fail(`${label}: fecha de creación futura.`);
 
     seenIds.add(habit.id);
-    validHabits.push({
+    habitKindById.set(habit.id, kind);
+    const validHabit = {
       id: habit.id, name: habit.name, icon: habit.icon, color: habit.color,
       freq: habit.freq, freqCount: habit.freqCount, freqPeriod: habit.freqPeriod,
-      createdAt: habit.createdAt
-    });
+      createdAt: habit.createdAt, kind
+    };
+    if (kind === 'quantitative') {
+      validHabit.unit = habit.unit;
+      validHabit.target = habit.target;
+    }
+    validHabits.push(validHabit);
   }
 
   const completionsIn = toNullProtoCopy(parsed.completions);
@@ -650,6 +827,9 @@ function validateBackup(rawText) {
       const habitExists = seenIds.has(habitId);
       if (value === true) {
         if (!habitExists) return fail(`Completado huérfano: "${dateKey}" referencia un hábito inexistente.`);
+        if (habitKindById.get(habitId) !== 'boolean') {
+          return fail(`Completado "${dateKey}" referencia un hábito que no es booleano.`);
+        }
         trueCount++;
         if (trueCount > MAX_IMPORT_TRUE_ENTRIES) {
           return fail(`Demasiadas entradas de completado (máximo ${MAX_IMPORT_TRUE_ENTRIES}).`);
@@ -670,6 +850,71 @@ function validateBackup(rawText) {
     }
   }
 
+  // quantities: solo existe en v2. Un backup v1 importado queda siempre
+  // con quantities={} -- no hay manera de que v1 traiga datos
+  // cuantitativos, así que no hay nada que migrar ni inferir acá.
+  let outQuantities = Object.create(null);
+  if (schemaVersion === 2) {
+    const quantitiesIn = toNullProtoCopy(parsed.quantities);
+    const qDateKeys = Object.keys(quantitiesIn);
+    if (qDateKeys.length > MAX_IMPORT_COMPLETION_DATES) {
+      return fail(`Demasiadas fechas de cantidad (máximo ${MAX_IMPORT_COMPLETION_DATES}).`);
+    }
+
+    let quantityEntryCount = 0;
+    for (const dateKey of qDateKeys) {
+      const dateObj = parseLocalDate(dateKey);
+      if (!dateObj) return fail(`Fecha de cantidad inválida: "${dateKey}".`);
+      if (dateObj > today) return fail(`Fecha de cantidad futura: "${dateKey}".`);
+
+      const entry = quantitiesIn[dateKey];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return fail(`Registro de cantidades inválido para "${dateKey}".`);
+      }
+      const entrySafe = toNullProtoCopy(entry);
+      const outEntry = Object.create(null);
+      let anyThisDate = false;
+
+      for (const habitId of Object.keys(entrySafe)) {
+        const value = entrySafe[habitId];
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return fail(`Valor de cantidad inválido para "${dateKey}".`);
+        }
+        const valueSafe = toNullProtoCopy(value);
+        const valueKeys = Object.keys(valueSafe);
+        if (valueKeys.length !== 2 || !('actualMinutes' in valueSafe) || !('plannedMinutes' in valueSafe)) {
+          return fail(`Campos de cantidad inválidos para "${dateKey}".`);
+        }
+        if (!isSafeNonNegativeInt(valueSafe.actualMinutes)) {
+          return fail(`actualMinutes inválido para "${dateKey}".`);
+        }
+        if (valueSafe.plannedMinutes !== null && !isSafeNonNegativeInt(valueSafe.plannedMinutes)) {
+          return fail(`plannedMinutes inválido para "${dateKey}".`);
+        }
+        if (!seenIds.has(habitId)) {
+          return fail(`Cantidad huérfana: "${dateKey}" referencia un hábito inexistente.`);
+        }
+        if (habitKindById.get(habitId) !== 'quantitative') {
+          return fail(`Cantidad "${dateKey}" referencia un hábito que no es cuantitativo.`);
+        }
+
+        quantityEntryCount++;
+        if (quantityEntryCount > MAX_IMPORT_TRUE_ENTRIES) {
+          return fail(`Demasiadas entradas de cantidad (máximo ${MAX_IMPORT_TRUE_ENTRIES}).`);
+        }
+        outEntry[habitId] = { actualMinutes: valueSafe.actualMinutes, plannedMinutes: valueSafe.plannedMinutes };
+        anyThisDate = true;
+      }
+
+      if (anyThisDate) {
+        outQuantities[dateKey] = outEntry;
+      }
+    }
+  }
+
+  // Normalización interna: toda importación exitosa (v1 o v2) produce
+  // datos ya en forma v2 (decisión humana) -- v1 se trata como v2 con
+  // quantities vacío y todo hábito kind="boolean".
   return {
     ok: true,
     fatal: null,
@@ -678,9 +923,16 @@ function validateBackup(rawText) {
       habitsCount: validHabits.length,
       completionDatesCount: Object.keys(outCompletions).length,
       trueEntriesCount: trueCount,
+      quantityDatesCount: Object.keys(outQuantities).length,
       exportedAt: parsed.exportedAt
     },
-    data: { schemaVersion: 1, exportedAt: parsed.exportedAt, habits: validHabits, completions: outCompletions }
+    data: {
+      schemaVersion: 2,
+      exportedAt: parsed.exportedAt,
+      habits: validHabits,
+      completions: outCompletions,
+      quantities: outQuantities
+    }
   };
 }
 
@@ -729,15 +981,28 @@ function isStructurallyValidCompletionsJson(str) {
   }
 }
 
+// Misma forma raíz que completions -- quantities no tiene un chequeo
+// más profundo acá, igual que completions nunca lo tuvo.
+function isStructurallyValidQuantitiesJson(str) {
+  try {
+    const parsed = JSON.parse(str);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch (e) {
+    return false;
+  }
+}
+
 // Verificación estructural post-escritura: excepción de lectura = fallo de
 // verificación (no éxito ambiguo), dispara el mismo camino de rollback que
 // una discrepancia real de contenido.
-function verifyStructuralWrite(newHabitsStr, newCompletionsStr) {
+function verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr) {
   try {
     return localStorage.getItem('habits') === newHabitsStr &&
       localStorage.getItem('completions') === newCompletionsStr &&
+      localStorage.getItem('quantities') === newQuantitiesStr &&
       isStructurallyValidHabitsJson(localStorage.getItem('habits')) &&
-      isStructurallyValidCompletionsJson(localStorage.getItem('completions'));
+      isStructurallyValidCompletionsJson(localStorage.getItem('completions')) &&
+      isStructurallyValidQuantitiesJson(localStorage.getItem('quantities'));
   } catch (e) {
     return false;
   }
@@ -759,19 +1024,21 @@ function restoreOneKey(key, rawValue) {
   return writeAndVerify(key, rawValue);
 }
 
-// Restaura AMBAS claves como una sola unidad lógica.
-function restoreExactRaw(habitsRaw, completionsRaw) {
+// Restaura las TRES claves como una sola unidad lógica.
+function restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw) {
   const habitsOk = restoreOneKey('habits', habitsRaw);
   const completionsOk = restoreOneKey('completions', completionsRaw);
-  return { verified: habitsOk && completionsOk };
+  const quantitiesOk = restoreOneKey('quantities', quantitiesRaw);
+  return { verified: habitsOk && completionsOk && quantitiesOk };
 }
 
-function buildSnapshot(habitsRaw, completionsRaw) {
+function buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw) {
   return JSON.stringify({
-    snapshotVersion: 1,
+    snapshotVersion: 2,
     createdAt: new Date().toISOString(),
     habitsRaw: habitsRaw,
-    completionsRaw: completionsRaw
+    completionsRaw: completionsRaw,
+    quantitiesRaw: quantitiesRaw
   });
 }
 
@@ -779,6 +1046,11 @@ function buildMarker() {
   return JSON.stringify({ stateVersion: 1, startedAt: new Date().toISOString() });
 }
 
+// snapshotVersion 2 agrega quantitiesRaw (Backup v2). Un snapshot
+// snapshotVersion=1 preexistente (de antes de este cambio) nunca pasa
+// este chequeo -- mismo criterio estricto de "coincidencia exacta" que
+// ya usaba esta función: cae a blocking-recovery, nunca se interpreta a
+// medias ni se completa el campo faltante en silencio.
 function parseSnapshotShape(raw) {
   if (typeof raw !== 'string') return null;
   let parsed;
@@ -788,10 +1060,11 @@ function parseSnapshotShape(raw) {
     return null;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  if (parsed.snapshotVersion !== 1) return null;
+  if (parsed.snapshotVersion !== 2) return null;
   if (typeof parsed.createdAt !== 'string' || isNaN(Date.parse(parsed.createdAt))) return null;
   if (!(parsed.habitsRaw === null || typeof parsed.habitsRaw === 'string')) return null;
   if (!(parsed.completionsRaw === null || typeof parsed.completionsRaw === 'string')) return null;
+  if (!(parsed.quantitiesRaw === null || typeof parsed.quantitiesRaw === 'string')) return null;
   return parsed;
 }
 
@@ -813,10 +1086,10 @@ function parseMarkerShape(raw) {
 // memoria. Nunca escribe una key de prueba ni un relleno. No garantiza
 // que los setItem() reales vayan a tener éxito -- esos, con su propia
 // verificación, son la única fuente de verdad.
-function estimateImportCapacity(newHabitsStr, newCompletionsStr, snapshotStr, markerStr) {
+function estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, snapshotStr, markerStr) {
   const TYPICAL_ORIGIN_QUOTA = 5 * 1024 * 1024;
   const estimatedBytes = utf8ByteLength(newHabitsStr) + utf8ByteLength(newCompletionsStr) +
-    utf8ByteLength(snapshotStr) + utf8ByteLength(markerStr);
+    utf8ByteLength(newQuantitiesStr) + utf8ByteLength(snapshotStr) + utf8ByteLength(markerStr);
   return { estimatedBytes, obviouslyTooLarge: estimatedBytes > TYPICAL_ORIGIN_QUOTA };
 }
 
@@ -843,17 +1116,20 @@ function performImportReplacement(validatedData) {
 
   const newHabitsStr = JSON.stringify(validatedData.habits);
   const newCompletionsStr = JSON.stringify(validatedData.completions);
+  const newQuantitiesStr = JSON.stringify(validatedData.quantities || {});
   const habitsRawRead = readExactRaw('habits');
   const completionsRawRead = readExactRaw('completions');
-  if (!habitsRawRead.ok || !completionsRawRead.ok) {
+  const quantitiesRawRead = readExactRaw('quantities');
+  if (!habitsRawRead.ok || !completionsRawRead.ok || !quantitiesRawRead.ok) {
     return { ok: false, error: 'No se pudo leer el estado actual antes de importar. No se modificaron tus datos.' };
   }
   const habitsRaw = habitsRawRead.value;
   const completionsRaw = completionsRawRead.value;
-  const snapshotStr = buildSnapshot(habitsRaw, completionsRaw);
+  const quantitiesRaw = quantitiesRawRead.value;
+  const snapshotStr = buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw);
   const markerStr = buildMarker();
 
-  const capacity = estimateImportCapacity(newHabitsStr, newCompletionsStr, snapshotStr, markerStr);
+  const capacity = estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, snapshotStr, markerStr);
   if (capacity.obviouslyTooLarge) {
     return { ok: false, error: 'El backup es demasiado grande para el almacenamiento disponible.' };
   }
@@ -872,10 +1148,11 @@ function performImportReplacement(validatedData) {
 
   const habitsWriteOk = writeAndVerify('habits', newHabitsStr);
   const completionsWriteOk = habitsWriteOk && writeAndVerify('completions', newCompletionsStr);
-  const structuralOk = habitsWriteOk && completionsWriteOk && verifyStructuralWrite(newHabitsStr, newCompletionsStr);
+  const quantitiesWriteOk = completionsWriteOk && writeAndVerify('quantities', newQuantitiesStr);
+  const structuralOk = quantitiesWriteOk && verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr);
 
   if (!structuralOk) {
-    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, 'No se pudieron escribir o verificar los datos importados.');
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, 'No se pudieron escribir o verificar los datos importados.');
   }
 
   let markerRemoved = false;
@@ -889,7 +1166,7 @@ function performImportReplacement(validatedData) {
   if (!markerRemoved) {
     // Decisión humana: los datos nuevos ya están escritos y verificados,
     // pero el import NO se considera exitoso si el marker sigue presente.
-    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, 'La importación no pudo cerrarse de forma segura y fue revertida.');
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, 'La importación no pudo cerrarse de forma segura y fue revertida.');
   }
 
   // Éxito real. El snapshot se conserva para cleanup en el próximo
@@ -899,8 +1176,8 @@ function performImportReplacement(validatedData) {
   return { ok: true };
 }
 
-function finishWithRollbackOrBlock(habitsRaw, completionsRaw, publicMessage) {
-  const restore = restoreExactRaw(habitsRaw, completionsRaw);
+function finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, publicMessage) {
+  const restore = restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw);
   if (!restore.verified) {
     enterBlockingRecovery('rollback-failed');
     return { ok: false, error: `${publicMessage} Además, no se pudo restaurar el estado anterior de forma segura.` };
@@ -952,7 +1229,7 @@ function recoverInterruptedImport() {
     return { state: 'blocking-recovery', reason: !marker ? 'marker-corrupt' : 'snapshot-corrupt' };
   }
 
-  const restore = restoreExactRaw(snapshot.habitsRaw, snapshot.completionsRaw);
+  const restore = restoreExactRaw(snapshot.habitsRaw, snapshot.completionsRaw, snapshot.quantitiesRaw);
   if (!restore.verified) {
     return { state: 'blocking-recovery', reason: 'restore-verify-failed' };
   }
@@ -1018,6 +1295,7 @@ function renderBlockingRecovery(reason) {
   [
     ['habits', 'habits (hábitos en vivo)'],
     ['completions', 'completions (completados en vivo)'],
+    ['quantities', 'quantities (cantidades en vivo)'],
     [SNAPSHOT_KEY, 'snapshot de la importación interrumpida'],
     [MARKER_KEY, 'marcador de la importación interrumpida']
   ].forEach(([key, label]) => {
@@ -1555,6 +1833,12 @@ function calculateStats(habit) {
 
 function toggleHabit(id, date) {
   if (hasStorageCorruption()) return;
+  // Sin interfaz de hábitos cuantitativos todavía: un hábito no-booleano
+  // (ej. importado de un backup v2) nunca puede marcarse completado por
+  // esta vía -- evita contaminar `completions` con una referencia a un
+  // hábito que no es de ese tipo, lo que bloquearía un export futuro.
+  const habit = state.habits.find(h => h.id === id);
+  if (!habit || habit.kind !== 'boolean') return;
   if (!state.completions[date]) state.completions[date] = {};
   state.completions[date][id] = !state.completions[date][id];
   saveData();
@@ -1569,6 +1853,11 @@ function deleteHabit(id) {
   for (const day in state.completions) {
     if (state.completions[day] && typeof state.completions[day] === 'object') {
       delete state.completions[day][id];
+    }
+  }
+  for (const day in state.quantities) {
+    if (state.quantities[day] && typeof state.quantities[day] === 'object') {
+      delete state.quantities[day][id];
     }
   }
 
@@ -1689,6 +1978,11 @@ function saveHabit() {
 
   const existing = state.editingId ? state.habits.find(h => h.id === state.editingId) : null;
 
+  // Sin interfaz de hábitos cuantitativos todavía: este formulario solo
+  // crea booleanos. Al editar, preserva kind/unit/target del hábito
+  // existente -- nunca los descarta en silencio solo porque este
+  // formulario no los edita (ej. un hábito quantitative importado de un
+  // backup v2 no debe degradarse a boolean por editar su nombre/color).
   const habit = {
     id: state.editingId || generateHabitId(),
     name,
@@ -1697,8 +1991,13 @@ function saveHabit() {
     freq: state.selectedFreq,
     freqCount: state.freqCount,
     freqPeriod: state.freqPeriod,
-    createdAt: existing ? existing.createdAt : getToday()
+    createdAt: existing ? existing.createdAt : getToday(),
+    kind: existing ? existing.kind : 'boolean'
   };
+  if (habit.kind === 'quantitative') {
+    habit.unit = existing.unit;
+    habit.target = existing.target;
+  }
 
   if (state.editingId) {
     const index = state.habits.findIndex(h => h.id === state.editingId);
@@ -1853,6 +2152,9 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted
     cell.onclick = () => {
       if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
+      // Mismo criterio que toggleHabit(): sin interfaz cuantitativa
+      // todavía, un hábito no-booleano nunca se marca por esta vía.
+      if (habit.kind !== 'boolean') return;
       const dateStr = cell.dataset.date;
       const hid = cell.dataset.habit;
       if (!state.completions[dateStr]) state.completions[dateStr] = {};
