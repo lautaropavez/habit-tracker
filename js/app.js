@@ -26,7 +26,17 @@ let state = {
   selectedHabitId: null,
   // Si true, Estadísticas muestra todos los hábitos en vez de uno solo.
   // Nunca es el valor por defecto: arranca mostrando un único hábito.
-  statsShowAll: false
+  statsShowAll: false,
+  // Posta 3 (hábitos cuantitativos): tipo y objetivo elegidos en el modal
+  // de creación/edición. selectedKind solo importa al CREAR -- al editar,
+  // saveHabit() siempre usa el kind del hábito existente (ver
+  // resolveHabitKindForSave), nunca este valor.
+  selectedKind: 'boolean',
+  selectedTargetMinutes: null,
+  // Fecha (YYYY-MM-DD) cuyo registro de minutos está abierto para edición
+  // en la vista Calendario, o null si no hay ninguna abierta. Solo aplica
+  // al hábito cuantitativo actualmente seleccionado en el calendario.
+  calendarEditingDate: null
 };
 
 function toLocalDateStr(date = new Date()) {
@@ -327,6 +337,68 @@ function isValidTarget(target) {
   if (!target || typeof target !== 'object' || Array.isArray(target)) return false;
   const keys = Object.keys(target);
   return keys.length === 1 && keys[0] === 'minutes' && isSafePositiveInt(target.minutes);
+}
+
+// Pura: determina el kind final a persistir. SIEMPRE el del hábito
+// existente si se está editando -- nunca el valor elegido en la UI.
+// Es la única garantía de "no permitir cambios de tipo que provoquen
+// pérdida de datos" (Posta 3): el tipo de un hábito jamás puede cambiar
+// una vez creado, sin importar qué haya quedado seleccionado en el modal.
+function resolveHabitKindForSave(existingHabit, uiSelectedKind) {
+  return existingHabit ? existingHabit.kind : uiSelectedKind;
+}
+
+// Pura: construye el target final a partir de los minutos configurados en
+// la UI. null = sin objetivo configurado; nunca se inventa un valor.
+function resolveQuantitativeTarget(selectedTargetMinutes) {
+  return selectedTargetMinutes === null ? null : { minutes: selectedTargetMinutes };
+}
+
+// Lectura de un registro de minutos: ausencia de entrada = 0 minutos
+// registrados ese día (distinto del contrato de export/import, donde
+// ausencia != 0 explícito -- ver buildBackupV2). Para la UI en vivo, "no
+// hay registro todavía" y "0 minutos" se muestran igual: 0.
+function getActualMinutes(habitId, dateStr) {
+  const entry = state.quantities[dateStr];
+  return (entry && entry[habitId]) ? entry[habitId].actualMinutes : 0;
+}
+
+function getPlannedMinutes(habitId, dateStr) {
+  const entry = state.quantities[dateStr];
+  return (entry && entry[habitId]) ? entry[habitId].plannedMinutes : null;
+}
+
+// Única vía de escritura de minutos (incrementos rápidos e ingreso manual
+// convergen acá). Nunca crea un registro duplicado: siempre reemplaza el
+// mismo slot quantities[dateStr][habitId]. Nunca toca plannedMinutes --
+// lo relee antes de escribir y lo conserva tal cual.
+function writeActualMinutes(habitId, dateStr, newActualMinutes) {
+  if (hasStorageCorruption()) return false;
+  const habit = state.habits.find(h => h.id === habitId);
+  if (!habit || habit.kind !== 'quantitative') return false;
+  if (!isSafeNonNegativeInt(newActualMinutes)) return false;
+
+  const plannedMinutes = getPlannedMinutes(habitId, dateStr);
+  if (!state.quantities[dateStr]) state.quantities[dateStr] = {};
+  state.quantities[dateStr][habitId] = { actualMinutes: newActualMinutes, plannedMinutes };
+  saveData();
+  return true;
+}
+
+// Incremento rápido (+5/-5 min). El piso es 0: nunca permite cantidades
+// negativas, sin importar cuántas veces se presione "-5 min".
+function incrementQuantity(habitId, dateStr, deltaMinutes) {
+  const current = getActualMinutes(habitId, dateStr);
+  writeActualMinutes(habitId, dateStr, Math.max(0, current + deltaMinutes));
+  render();
+}
+
+// Ingreso manual: reemplaza el total del día, nunca lo suma. Un valor
+// inválido (no entero seguro, negativo, NaN) no escribe nada -- el
+// siguiente render() restaura el valor real ya guardado.
+function setQuantityExact(habitId, dateStr, newActualMinutes) {
+  writeActualMinutes(habitId, dateStr, newActualMinutes);
+  render();
 }
 
 function isValidIcon(icon) {
@@ -1542,6 +1614,8 @@ function setupEvents() {
     // Elegir un hábito explícito en el calendario deja de ser "mostrar
     // todo" en Estadísticas si el usuario navega ahí después.
     state.statsShowAll = false;
+    // El editor de minutos abierto pertenecía al hábito anterior.
+    state.calendarEditingDate = null;
     renderCalendar();
   };
   document.getElementById('calendarGoToStatsBtn').onclick = () => {
@@ -1618,13 +1692,86 @@ function render() {
   if (state.currentView === 'stats') renderStats();
 }
 
+// Controles de registro de minutos para un hábito cuantitativo en una
+// fecha dada: resumen (minutos/objetivo), barra de progreso (limitada
+// visualmente a 100%, aunque el total real puede superarlo) y los dos
+// métodos de registro (incrementos +5/-5 e ingreso manual exacto).
+// Reutilizado tanto en la tarjeta de "Hoy" como en el editor del
+// Calendario -- misma UI, distinta fecha.
+function createQuantityControls(habit, dateStr, corrupted) {
+  const actual = getActualMinutes(habit.id, dateStr);
+  const target = habit.target ? habit.target.minutes : null;
+  const pct = target ? Math.min(100, Math.round((actual / target) * 100)) : 0;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'quantity-controls';
+
+  const summary = document.createElement('div');
+  summary.className = 'quantity-summary';
+  summary.textContent = target !== null ? `${actual} / ${target} min` : `${actual} min (sin objetivo)`;
+  wrap.appendChild(summary);
+
+  if (target !== null) {
+    const barOuter = document.createElement('div');
+    barOuter.className = 'progress-bar';
+    const barInner = document.createElement('div');
+    barInner.className = 'progress-bar-fill';
+    barInner.style.width = `${pct}%`;
+    if (isValidColorHex(habit.color)) barInner.style.background = habit.color;
+    barOuter.appendChild(barInner);
+    wrap.appendChild(barOuter);
+  }
+
+  const buttonsRow = document.createElement('div');
+  buttonsRow.className = 'quantity-buttons';
+
+  const minusBtn = document.createElement('button');
+  minusBtn.type = 'button';
+  minusBtn.className = 'btn btn-quantity';
+  minusBtn.textContent = '−5 min';
+  minusBtn.disabled = corrupted;
+  minusBtn.onclick = () => incrementQuantity(habit.id, dateStr, -5);
+
+  const manualInput = document.createElement('input');
+  manualInput.type = 'number';
+  manualInput.min = '0';
+  manualInput.step = '1';
+  manualInput.className = 'quantity-manual-input';
+  manualInput.value = String(actual);
+  manualInput.disabled = corrupted;
+  manualInput.setAttribute('aria-label', `Minutos registrados para ${habit.name} el ${dateStr}`);
+  manualInput.onchange = (e) => {
+    const raw = e.target.value.trim();
+    const num = raw === '' ? NaN : Number(raw);
+    const parsed = Number.isInteger(num) ? num : NaN;
+    setQuantityExact(habit.id, dateStr, parsed);
+  };
+
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'btn btn-quantity';
+  plusBtn.textContent = '+5 min';
+  plusBtn.disabled = corrupted;
+  plusBtn.onclick = () => incrementQuantity(habit.id, dateStr, 5);
+
+  buttonsRow.appendChild(minusBtn);
+  buttonsRow.appendChild(manualInput);
+  buttonsRow.appendChild(plusBtn);
+  wrap.appendChild(buttonsRow);
+
+  return wrap;
+}
+
 // Construye la tarjeta de un hábito con DOM API segura: habit.name/icon/color
 // y habit.id (dato persistido, no confiable) nunca se interpolan en innerHTML.
 // El color se valida contra el formato hex antes de aplicarse a style.
+// Booleano y cuantitativo comparten encabezado (nombre/ícono/editar/eliminar)
+// pero difieren en el control de registro y en las estadísticas mostradas
+// (Posta 3): nunca se mezcla completions con quantities para un mismo hábito.
 function createHabitCard(habit, today) {
-  const isCompleted = state.completions[today]?.[habit.id] || false;
-  const stats = calculateStats(habit);
   const corrupted = hasStorageCorruption();
+  const isBoolean = habit.kind === 'boolean';
+  const stats = isBoolean ? calculateStats(habit) : null;
 
   const card = document.createElement('div');
   card.className = 'habit-card';
@@ -1653,17 +1800,26 @@ function createHabitCard(habit, today) {
   };
   const freqDiv = document.createElement('div');
   freqDiv.className = 'habit-freq';
-  freqDiv.textContent = `${getFreqText(habit)}${getPeriodProgressText(habit, stats)}`;
+  freqDiv.textContent = isBoolean
+    ? `${getFreqText(habit)}${getPeriodProgressText(habit, stats)}`
+    : getFreqText(habit);
   info.appendChild(nameDiv);
   info.appendChild(freqDiv);
 
-  const checkBtn = document.createElement('button');
-  checkBtn.className = `btn btn-check ${isCompleted ? 'completed' : ''}`;
-  checkBtn.dataset.action = 'toggle';
-  checkBtn.dataset.id = habit.id;
-  checkBtn.dataset.date = today;
-  checkBtn.disabled = corrupted;
-  checkBtn.textContent = isCompleted ? '✓' : '○';
+  header.appendChild(iconSpan);
+  header.appendChild(info);
+
+  if (isBoolean) {
+    const isCompleted = state.completions[today]?.[habit.id] || false;
+    const checkBtn = document.createElement('button');
+    checkBtn.className = `btn btn-check ${isCompleted ? 'completed' : ''}`;
+    checkBtn.dataset.action = 'toggle';
+    checkBtn.dataset.id = habit.id;
+    checkBtn.dataset.date = today;
+    checkBtn.disabled = corrupted;
+    checkBtn.textContent = isCompleted ? '✓' : '○';
+    header.appendChild(checkBtn);
+  }
 
   const editBtn = document.createElement('button');
   editBtn.className = 'btn btn-edit';
@@ -1679,11 +1835,14 @@ function createHabitCard(habit, today) {
   deleteBtn.disabled = corrupted;
   deleteBtn.textContent = '🗑️';
 
-  header.appendChild(iconSpan);
-  header.appendChild(info);
-  header.appendChild(checkBtn);
   header.appendChild(editBtn);
   header.appendChild(deleteBtn);
+  card.appendChild(header);
+
+  if (!isBoolean) {
+    card.appendChild(createQuantityControls(habit, today, corrupted));
+    return card;
+  }
 
   const statsDiv = document.createElement('div');
   statsDiv.className = 'stats';
@@ -1706,7 +1865,6 @@ function createHabitCard(habit, today) {
     statsDiv.appendChild(stat);
   });
 
-  card.appendChild(header);
   card.appendChild(statsDiv);
   return card;
 }
@@ -1877,6 +2035,8 @@ function editHabit(id) {
   state.selectedFreq = habit.freq;
   state.freqCount = habit.freqCount || 7;
   state.freqPeriod = habit.freqPeriod || 'week';
+  state.selectedKind = habit.kind;
+  state.selectedTargetMinutes = (habit.kind === 'quantitative' && habit.target) ? habit.target.minutes : null;
 
   renderModalContent();
   document.getElementById('modal').classList.add('active');
@@ -1891,6 +2051,8 @@ function openModal() {
   state.selectedFreq = 'daily';
   state.freqCount = 7;
   state.freqPeriod = 'week';
+  state.selectedKind = 'boolean';
+  state.selectedTargetMinutes = null;
 
   renderModalContent();
   document.getElementById('modal').classList.add('active');
@@ -1953,6 +2115,55 @@ ${state.selectedFreq === 'custom' ? `
       state.freqPeriod = e.target.value;
     };
   }
+
+  // Tipo (Posta 3): solo seleccionable al CREAR. Al editar, se muestra
+  // fijo y sin handler de click -- el tipo de un hábito existente nunca
+  // puede cambiarse desde esta UI (ver resolveHabitKindForSave()).
+  const kindGroup = document.getElementById('kindOptions');
+  if (state.editingId) {
+    const kindLabel = state.selectedKind === 'quantitative' ? 'Cuantitativo (minutos)' : 'Booleano (check diario)';
+    const readonly = document.createElement('div');
+    readonly.className = 'kind-option selected kind-readonly';
+    readonly.textContent = kindLabel;
+    const note = document.createElement('div');
+    note.className = 'kind-readonly-note';
+    note.textContent = 'El tipo de un hábito no se puede cambiar una vez creado.';
+    kindGroup.innerHTML = '';
+    kindGroup.appendChild(readonly);
+    kindGroup.appendChild(note);
+  } else {
+    kindGroup.innerHTML = `
+<div class="kind-option ${state.selectedKind === 'boolean' ? 'selected' : ''}" data-kind="boolean">
+<strong>Booleano</strong>
+<div class="kind-desc">Check diario (sí/no)</div>
+</div>
+<div class="kind-option ${state.selectedKind === 'quantitative' ? 'selected' : ''}" data-kind="quantitative">
+<strong>Cuantitativo</strong>
+<div class="kind-desc">Registrar minutos por día</div>
+</div>
+`;
+    document.querySelectorAll('.kind-option').forEach(opt => {
+      opt.onclick = () => {
+        state.selectedKind = opt.dataset.kind;
+        renderModalContent();
+      };
+    });
+  }
+
+  const targetGroup = document.getElementById('targetGroup');
+  if (state.selectedKind === 'quantitative') {
+    targetGroup.hidden = false;
+    const targetInput = document.getElementById('targetMinutesInput');
+    targetInput.value = state.selectedTargetMinutes === null ? '' : String(state.selectedTargetMinutes);
+    targetInput.onchange = (e) => {
+      const raw = e.target.value.trim();
+      if (raw === '') { state.selectedTargetMinutes = null; return; }
+      const num = Number(raw);
+      state.selectedTargetMinutes = (Number.isInteger(num) && num >= 1) ? num : null;
+    };
+  } else {
+    targetGroup.hidden = true;
+  }
 }
 
 function closeModal() {
@@ -1978,11 +2189,12 @@ function saveHabit() {
 
   const existing = state.editingId ? state.habits.find(h => h.id === state.editingId) : null;
 
-  // Sin interfaz de hábitos cuantitativos todavía: este formulario solo
-  // crea booleanos. Al editar, preserva kind/unit/target del hábito
-  // existente -- nunca los descarta en silencio solo porque este
-  // formulario no los edita (ej. un hábito quantitative importado de un
-  // backup v2 no debe degradarse a boolean por editar su nombre/color).
+  // kind SIEMPRE se resuelve vía resolveHabitKindForSave(): al editar, es
+  // el del hábito existente, nunca el de la UI -- el tipo de un hábito no
+  // puede cambiar una vez creado (Posta 3).
+  const kind = resolveHabitKindForSave(existing, state.selectedKind);
+  if (!isValidKind(kind)) { alert('Tipo de hábito inválido'); return; }
+
   const habit = {
     id: state.editingId || generateHabitId(),
     name,
@@ -1992,11 +2204,17 @@ function saveHabit() {
     freqCount: state.freqCount,
     freqPeriod: state.freqPeriod,
     createdAt: existing ? existing.createdAt : getToday(),
-    kind: existing ? existing.kind : 'boolean'
+    kind
   };
-  if (habit.kind === 'quantitative') {
-    habit.unit = existing.unit;
-    habit.target = existing.target;
+
+  if (kind === 'quantitative') {
+    habit.unit = 'minutes';
+    habit.target = resolveQuantitativeTarget(state.selectedTargetMinutes);
+    if (!isValidUnit(habit.unit)) { alert('Unidad inválida'); return; }
+    if (!isValidTarget(habit.target)) {
+      alert('Objetivo diario inválido (debe ser un entero mayor o igual a 1, o quedar vacío).');
+      return;
+    }
   }
 
   if (state.editingId) {
@@ -2105,32 +2323,32 @@ function renderCalendar() {
     const day = prevMonthDays - i;
     const date = new Date(year, month - 1, day);
     const dateStr = toLocalDateStr(date);
-    const isCompleted = state.completions[dateStr]?.[habitId];
     const isFuture = date > today;
+    const deco = getCalendarDayDecoration(dateStr, habit);
 
-    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}" data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
+    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${deco.stateClass}" data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
   }
 
   for (let day = 1; day <= daysInMonth; day++) {
     const date = new Date(year, month, day);
     const dateStr = toLocalDateStr(date);
-    const isCompleted = state.completions[dateStr]?.[habitId];
     const isToday = date.getTime() === today.getTime();
     const isFuture = date > today;
+    const deco = getCalendarDayDecoration(dateStr, habit);
 
-    html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
+    html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${deco.stateClass}"
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
   }
 
   const remainingDays = 42 - (startDay + daysInMonth);
   for (let day = 1; day <= remainingDays; day++) {
     const date = new Date(year, month + 1, day);
     const dateStr = toLocalDateStr(date);
-    const isCompleted = state.completions[dateStr]?.[habitId];
     const isFuture = date > today;
+    const deco = getCalendarDayDecoration(dateStr, habit);
 
-    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${isCompleted ? 'completed' : ''}"
-data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted ? ', completado' : ''}">${day}${isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : ''}</div>`;
+    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${deco.stateClass}"
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
   }
 
   grid.innerHTML = html;
@@ -2140,23 +2358,34 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted
   // arriba, para no exponer una superficie de inyección de atributos.
   document.querySelectorAll('.calendar-day').forEach(cell => {
     cell.dataset.habit = habitId;
-    // Reemplaza el punto decorativo anterior: el día completado rellena
-    // todo el cuadrado con el color del hábito, con el texto del número
-    // recalculado para seguir siendo legible sobre ese color exacto.
-    if (cell.classList.contains('completed')) {
+    // Reemplaza el punto decorativo anterior: el día completado/con minutos
+    // rellena todo el cuadrado con el color del hábito, con el texto del
+    // número recalculado para seguir siendo legible sobre ese color exacto.
+    // "quantity-partial" (minutos registrados sin alcanzar el objetivo) usa
+    // el mismo color a mitad de opacidad para distinguirse visualmente de
+    // "completed"/"quantity-met" sin introducir una paleta nueva.
+    if (cell.classList.contains('completed') || cell.classList.contains('quantity-met')) {
       cell.style.background = fillColor;
       cell.style.color = fillTextColor;
-      // El ✓ (marcado en el propio HTML del día) y el aria-label dan una
-      // señal de estado que no depende únicamente del color de relleno.
+    } else if (cell.classList.contains('quantity-partial')) {
+      cell.style.background = fillColor;
+      cell.style.color = fillTextColor;
+      cell.style.opacity = '0.5';
     }
     cell.onclick = () => {
       if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
-      // Mismo criterio que toggleHabit(): sin interfaz cuantitativa
-      // todavía, un hábito no-booleano nunca se marca por esta vía.
-      if (habit.kind !== 'boolean') return;
       const dateStr = cell.dataset.date;
       const hid = cell.dataset.habit;
+
+      if (habit.kind === 'quantitative') {
+        // Abre (o cambia) el editor de minutos para esta fecha puntual.
+        // No modifica ninguna otra fecha ni ningún otro hábito.
+        state.calendarEditingDate = dateStr;
+        renderCalendar();
+        return;
+      }
+      if (habit.kind !== 'boolean') return;
       if (!state.completions[dateStr]) state.completions[dateStr] = {};
       state.completions[dateStr][hid] = !state.completions[dateStr][hid];
       saveData();
@@ -2165,12 +2394,170 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${isCompleted
       renderStats();
     };
   });
+
+  renderCalendarQuantityEditor(habit && habit.kind === 'quantitative' ? habit : null, state.calendarEditingDate);
+}
+
+// Decoración visual de una celda del calendario. Booleano usa completions
+// (cumplido/no cumplido); cuantitativo usa quantities (minutos
+// registrados vs. objetivo) -- nunca se mezclan ambas fuentes para el
+// mismo hábito.
+function getCalendarDayDecoration(dateStr, habit) {
+  if (!habit) return { stateClass: '', badgeHtml: '', ariaExtra: '' };
+
+  if (habit.kind === 'quantitative') {
+    const actual = getActualMinutes(habit.id, dateStr);
+    if (actual <= 0) return { stateClass: '', badgeHtml: '', ariaExtra: '' };
+    const target = habit.target ? habit.target.minutes : null;
+    const met = target !== null && actual >= target;
+    return {
+      stateClass: met ? 'quantity-met' : 'quantity-partial',
+      badgeHtml: `<span class="calendar-day-check" aria-hidden="true">${actual}m</span>`,
+      ariaExtra: met ? ', objetivo cumplido' : ', con minutos registrados'
+    };
+  }
+
+  const isCompleted = state.completions[dateStr]?.[habit.id];
+  return {
+    stateClass: isCompleted ? 'completed' : '',
+    badgeHtml: isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : '',
+    ariaExtra: isCompleted ? ', completado' : ''
+  };
+}
+
+// Editor inline de minutos para una fecha puntual del Calendario (hábito
+// cuantitativo seleccionado). Reutiliza createQuantityControls() tal cual
+// se usa en la vista Hoy, solo que con la fecha elegida en vez de hoy.
+function renderCalendarQuantityEditor(habit, dateStr) {
+  const container = document.getElementById('calendarQuantityEditor');
+  if (!habit || !dateStr) {
+    container.hidden = true;
+    container.innerHTML = '';
+    return;
+  }
+  container.hidden = false;
+  container.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'quantity-editor-title';
+  title.textContent = `Editar minutos — ${dateStr}`;
+  container.appendChild(title);
+  container.appendChild(createQuantityControls(habit, dateStr, hasStorageCorruption()));
+}
+
+// Estadísticas de un hábito cuantitativo: minutos registrados hoy,
+// objetivo, progreso del día y acumulado histórico. Nunca mezcla minutos
+// con cantidad de hábitos completados -- ese concepto (racha, tasa de
+// éxito por período) es exclusivo de calculateStats()/hábitos booleanos.
+function calculateQuantityStats(habit) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let createdAtDate = parseLocalDate(habit.createdAt) || today;
+  if (createdAtDate > today) createdAtDate = today;
+
+  const target = habit.target ? habit.target.minutes : null;
+  let totalMinutes = 0;
+
+  for (let d = new Date(createdAtDate); d <= today; d = addDays(d, 1)) {
+    totalMinutes += getActualMinutes(habit.id, toLocalDateStr(d));
+  }
+
+  const todayMinutes = getActualMinutes(habit.id, getToday());
+  const todayProgressPct = target !== null ? Math.min(100, Math.round((todayMinutes / target) * 100)) : null;
+
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const ds = toLocalDateStr(d);
+    last7Days.push({ label: ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()], value: getActualMinutes(habit.id, ds) });
+  }
+
+  return { totalMinutes, todayMinutes, target, todayProgressPct, last7Days };
 }
 
 // habit.name/icon/color son datos persistidos, no confiables: se asignan vía
 // textContent/property, nunca interpolados en innerHTML. color se valida
 // contra el formato hex antes de aplicarse a cualquier style.
+function createQuantityStatsCard(habit) {
+  const stats = calculateQuantityStats(habit);
+  const safeColor = isValidColorHex(habit.color) ? habit.color : null;
+
+  const card = document.createElement('div');
+  card.className = 'stats-card';
+  if (safeColor) card.style.borderLeftColor = safeColor;
+
+  const header = document.createElement('div');
+  header.className = 'stats-header';
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'habit-icon';
+  iconSpan.textContent = habit.icon;
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'stats-title';
+  titleSpan.textContent = habit.name;
+  header.appendChild(iconSpan);
+  header.appendChild(titleSpan);
+
+  const freqDiv = document.createElement('div');
+  freqDiv.className = 'habit-freq';
+  freqDiv.textContent = getFreqText(habit);
+
+  const numbersDiv = document.createElement('div');
+  numbersDiv.className = 'stats-numbers';
+  [
+    [`${stats.todayMinutes} min`, 'Minutos hoy'],
+    [stats.target !== null ? `${stats.target} min` : 'Sin objetivo', 'Objetivo diario'],
+    [stats.todayProgressPct !== null ? `${stats.todayProgressPct}%` : '—', 'Progreso hoy'],
+    [`${stats.totalMinutes} min`, 'Total acumulado']
+  ].forEach(([value, label]) => {
+    const box = document.createElement('div');
+    box.className = 'stat-box';
+    const valueDiv = document.createElement('div');
+    valueDiv.className = 'stat-box-value';
+    valueDiv.textContent = value;
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'stat-box-label';
+    labelDiv.textContent = label;
+    box.appendChild(valueDiv);
+    box.appendChild(labelDiv);
+    numbersDiv.appendChild(box);
+  });
+
+  const chart = document.createElement('div');
+  chart.className = 'chart';
+  const chartTitle = document.createElement('div');
+  chartTitle.className = 'chart-title';
+  chartTitle.textContent = 'Últimos 7 días (minutos)';
+  const chartBars = document.createElement('div');
+  chartBars.className = 'chart-bars';
+
+  const scaleBase = stats.target || Math.max(1, ...stats.last7Days.map(d => d.value));
+  stats.last7Days.forEach(day => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chart-bar-wrapper';
+    const bar = document.createElement('div');
+    bar.className = 'chart-bar';
+    bar.style.height = `${Math.min(100, Math.round((day.value / scaleBase) * 100))}%`;
+    if (safeColor) bar.style.background = safeColor;
+    const label = document.createElement('div');
+    label.className = 'chart-label';
+    label.textContent = day.label;
+    wrapper.appendChild(bar);
+    wrapper.appendChild(label);
+    chartBars.appendChild(wrapper);
+  });
+
+  chart.appendChild(chartTitle);
+  chart.appendChild(chartBars);
+
+  card.appendChild(header);
+  card.appendChild(freqDiv);
+  card.appendChild(numbersDiv);
+  card.appendChild(chart);
+  return card;
+}
+
 function createStatsCard(habit) {
+  if (habit.kind === 'quantitative') return createQuantityStatsCard(habit);
   const stats = calculateStats(habit);
   const today = new Date();
   today.setHours(0, 0, 0, 0);

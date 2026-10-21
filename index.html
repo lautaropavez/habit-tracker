@@ -44,6 +44,7 @@
       </div>
       <div class="calendar-grid" id="calendarGrid"></div>
     </div>
+    <div id="calendarQuantityEditor" class="quantity-editor" hidden></div>
   </div>
 
   <div id="statsView" class="view">
@@ -62,6 +63,16 @@
       <div class="form-group">
         <label>Nombre</label>
         <input type="text" id="habitName" placeholder="Ej: Meditar" />
+      </div>
+
+      <div class="form-group">
+        <label>Tipo</label>
+        <div class="kind-options" id="kindOptions"></div>
+      </div>
+
+      <div class="form-group" id="targetGroup" hidden>
+        <label>Objetivo diario (minutos)</label>
+        <input type="number" min="1" id="targetMinutesInput" placeholder="Opcional, ej: 60" />
       </div>
 
       <div class="form-group">

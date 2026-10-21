@@ -65,6 +65,9 @@ function loadApp(localStorageSeed) {
     document: makeNoopProxy('document'),
     navigator: { canShare: undefined },
     alert: () => {},
+    // deleteHabit() pide confirmación antes de borrar -- en la sandbox de
+    // test siempre se acepta, para poder ejercer la función real sin UI.
+    confirm: () => true,
     Blob: function Blob() {},
     File: undefined,
   };

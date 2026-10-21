@@ -333,6 +333,44 @@ select {
   min-width: 70px;
 }
 
+.kind-options {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kind-option {
+  flex: 1;
+  min-width: 120px;
+  padding: 12px;
+  background: #1a1a1a;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.kind-option.selected {
+  border-color: #4CAF50;
+}
+
+.kind-option.kind-readonly {
+  cursor: default;
+  flex: none;
+  width: 100%;
+}
+
+.kind-desc {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.kind-readonly-note {
+  font-size: 11px;
+  color: #888;
+  margin-top: 6px;
+}
+
 .modal-actions {
   display: flex;
   gap: 10px;
@@ -566,6 +604,64 @@ select {
   color: #888;
   margin-top: 5px;
   font-weight: 600;
+}
+
+.quantity-controls {
+  margin-top: 10px;
+}
+
+.quantity-summary {
+  font-size: 13px;
+  color: #ccc;
+  margin-bottom: 6px;
+}
+
+.progress-bar {
+  height: 10px;
+  background: #1a1a1a;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: #4CAF50;
+  border-radius: 5px;
+  transition: width 0.2s;
+}
+
+.quantity-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-quantity {
+  min-height: 44px;
+  background: #3a3a3a;
+  color: white;
+  flex-shrink: 0;
+}
+
+.quantity-manual-input {
+  flex: 1;
+  min-width: 70px;
+  text-align: center;
+  min-height: 44px;
+}
+
+.quantity-editor {
+  margin-top: 15px;
+  background: #2a2a2a;
+  padding: 15px;
+  border-radius: 10px;
+}
+
+.quantity-editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
 }
 
 .import-fatal {
