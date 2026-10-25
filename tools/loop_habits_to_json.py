@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Conversor local: Loop Habit Tracker (SQLite) -> Backup JSON v1 de Habit
-Tracker.
+Conversor local: Loop Habit Tracker (SQLite) -> Backup JSON v2 de Habit
+Tracker (solo habitos booleanos; los cuantitativos se rechazan).
 
 FASE ACTUAL: solo datos sinteticos. No ejecutar contra un backup real de
 Loop sin Gate B explicito (ver docs/ROADMAP.md y docs/SECURITY.md).
@@ -418,6 +418,7 @@ def convert(conn, today_local_str=None):
             'freqCount': freq_count,
             'freqPeriod': freq_period,
             'createdAt': created_at,
+            'kind': 'boolean',
         })
         for d in completed_dates:
             out_completions.setdefault(d, {})[new_id] = True
@@ -427,10 +428,13 @@ def convert(conn, today_local_str=None):
 
     exported_at = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
     return {
-        'schemaVersion': 1,
+        'schemaVersion': 2,
         'exportedAt': exported_at,
         'habits': out_habits,
         'completions': out_completions,
+        # Los habitos cuantitativos siguen rechazados (fatal) hasta
+        # confirmar su semantica: por ahora `quantities` siempre es {}.
+        'quantities': {},
     }
 
 

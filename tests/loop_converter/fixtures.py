@@ -96,3 +96,61 @@ def local_ms(dt_naive):
     timestamp_to_local_date() en el conversor, para poder construir
     fixtures deterministas de limites horarios."""
     return int(dt_naive.astimezone().timestamp() * 1000)
+
+
+# ---------------------------------------------------------------------
+# Fixtures con la FORMA de columnas confirmada en Gate B-2 (user_version
+# 25): Habits agrega target_type, target_value, unit; Repetitions agrega
+# notes. SOLO se confirmaron nombres y tipos de columna. El significado
+# de target_type, la escala de target_value/Repetitions.value, las
+# unidades y los valores especiales siguen SIN RESOLVER: los valores
+# que usan los tests son opacos y sinteticos, nunca una interpretacion.
+# ---------------------------------------------------------------------
+def create_synthetic_db_v25_shape(path):
+    conn = sqlite3.connect(path)
+    conn.execute(f'''
+        CREATE TABLE {schema.TABLE_HABITS} (
+            {schema.COL_HABIT_ID} INTEGER PRIMARY KEY,
+            {schema.COL_HABIT_ARCHIVED} INTEGER,
+            color INTEGER,
+            description TEXT,
+            {schema.COL_HABIT_FREQ_DEN} INTEGER,
+            {schema.COL_HABIT_FREQ_NUM} INTEGER,
+            highlight INTEGER,
+            {schema.COL_HABIT_NAME} TEXT,
+            position INTEGER,
+            reminder_hour INTEGER,
+            reminder_min INTEGER,
+            reminder_days INTEGER,
+            {schema.COL_HABIT_TYPE} INTEGER,
+            target_type INTEGER,
+            target_value REAL,
+            unit TEXT,
+            question TEXT,
+            uuid TEXT
+        )
+    ''')
+    conn.execute(f'''
+        CREATE TABLE {schema.TABLE_REPETITIONS} (
+            {schema.COL_REPETITION_ID} INTEGER PRIMARY KEY,
+            {schema.COL_REPETITION_HABIT_ID} INTEGER,
+            {schema.COL_REPETITION_TIMESTAMP} INTEGER,
+            {schema.COL_REPETITION_VALUE} INTEGER,
+            notes TEXT
+        )
+    ''')
+    conn.commit()
+    return conn
+
+
+def insert_habit_v25(conn, habit_id, name, freq_num, freq_den, habit_type=0,
+                     target_type=0, target_value=0.0, unit='', archived=0):
+    conn.execute(
+        f'INSERT INTO {schema.TABLE_HABITS} '
+        f'({schema.COL_HABIT_ID}, {schema.COL_HABIT_NAME}, {schema.COL_HABIT_FREQ_NUM}, '
+        f'{schema.COL_HABIT_FREQ_DEN}, {schema.COL_HABIT_ARCHIVED}, {schema.COL_HABIT_TYPE}, '
+        'target_type, target_value, unit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (habit_id, name, freq_num, freq_den, archived, habit_type,
+         target_type, target_value, unit),
+    )
+    conn.commit()

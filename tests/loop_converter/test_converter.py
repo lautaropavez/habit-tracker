@@ -233,7 +233,7 @@ class AtomicityTests(TempDbTestCase):
 
 
 class ValidDatasetShapeTests(TempDbTestCase):
-    def test_valid_dataset_produces_backup_v1_shape(self):
+    def test_valid_dataset_produces_backup_v2_shape(self):
         conn = self.make_db()
         fixtures.insert_habit(conn, 1, 'Meditar', 1, 1)
         fixtures.insert_habit(conn, 2, 'Gimnasio', 3, 7)
@@ -243,14 +243,16 @@ class ValidDatasetShapeTests(TempDbTestCase):
 
         data = converter.convert(conn, today_local_str='2026-06-01')
 
-        self.assertEqual(sorted(data.keys()), sorted(['schemaVersion', 'exportedAt', 'habits', 'completions']))
-        self.assertEqual(data['schemaVersion'], 1)
+        self.assertEqual(sorted(data.keys()), sorted(['schemaVersion', 'exportedAt', 'habits', 'completions', 'quantities']))
+        self.assertEqual(data['schemaVersion'], 2)
+        self.assertEqual(data['quantities'], {})
         self.assertEqual(len(data['habits']), 2)
         for h in data['habits']:
             self.assertEqual(
                 sorted(h.keys()),
-                sorted(['id', 'name', 'icon', 'color', 'freq', 'freqCount', 'freqPeriod', 'createdAt']),
+                sorted(['id', 'name', 'icon', 'color', 'freq', 'freqCount', 'freqPeriod', 'createdAt', 'kind']),
             )
+            self.assertEqual(h['kind'], 'boolean')
             self.assertEqual(h['icon'], '\U0001F4DA')
             self.assertEqual(h['color'], '#4ECDC4')
         # El habito 2 tuvo una sola repeticion y no estaba completada (value=0):
@@ -279,7 +281,7 @@ class CliOutputTests(TempDbTestCase):
         self.assertTrue(os.path.exists(self.out_path))
         with open(self.out_path, encoding='utf-8') as f:
             data = json.load(f)
-        self.assertEqual(data['schemaVersion'], 1)
+        self.assertEqual(data['schemaVersion'], 2)
 
     def test_cli_does_not_overwrite_existing_output(self):
         conn = self.make_db()
