@@ -53,7 +53,8 @@ Checklist viva. Un ítem solo se marca como hecho cuando está verificado de ver
 ### P1 — Completar historial de estudio
 
 - [x] Incorporar una opción para marcar y quitar SKIP manualmente, por ejemplo en días de enfermedad o vacaciones. *Implementada* como ciclo de tres estados en el Calendario (sin registro → completado → SKIP → sin registro, con leyenda y etiquetas accesibles; contrato en `PROJECT_CONTEXT.md`, sección 6). **Pendiente: prueba visual real en navegador e iPhone** (se verifica dentro del segundo ítem de P0); el cambio sigue sin commit.
-- [ ] Diseñar un importador de horas de estudio desde un archivo Markdown (`.md`) con registros diarios.
+- [x] Importador de historial de tiempo *implementado* desde un **JSON** intermedio (versión 1; ver `PROJECT_CONTEXT.md`, sección 6), con SKIP cuantitativo en el contrato de Backup v3. **Pendiente:** aplicar el historial real con autorización (Gate B) y la prueba visual de la vista previa. El importador directo desde Markdown ya no es necesario.
+- [~] Diseñar un importador de horas de estudio desde un archivo Markdown (`.md`) con registros diarios. *(reemplazado por el JSON intermedio)*
 - [ ] Convertir las horas registradas a minutos, conservando las fechas originales.
 - [ ] Mostrar una vista previa y detectar fechas ya presentes en Loop, sin sobrescribirlas silenciosamente.
 - [ ] Importar únicamente los registros confirmados y verificar los totales.

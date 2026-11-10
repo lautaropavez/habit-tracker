@@ -80,6 +80,9 @@ test('index.html: el encabezado ya no muestra Exportar/Importar; viven dentro de
   const menu = header.slice(header.indexOf('id="headerMenu"'));
   assert.match(menu, /id="exportBtn"[^>]*role="menuitem"[^>]*>Exportar backup</);
   assert.match(menu, /id="importBtn"[^>]*role="menuitem"[^>]*>Importar backup</);
+  assert.match(menu, /id="historyBtn"[^>]*role="menuitem"[^>]*>Importar historial de tiempo</);
+  assert.match(html, /id="historyFileInput"[^>]*accept="application\/json,\.json"[^>]*hidden/);
+  assert.match(html, /id="historyImport" class="modal"/);
   assert.doesNotMatch(header.slice(0, header.indexOf('id="headerMenu"')), /Exportar backup|Importar backup/);
   assert.match(header, /id="menuBtn"[^>]*aria-label="Más opciones"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"[^>]*aria-controls="headerMenu"/);
   assert.match(header, /id="headerMenu" role="menu"[^>]*hidden/);
@@ -117,19 +120,22 @@ test('menú: flechas, Inicio y Fin recorren las opciones; Tab cierra', () => {
   const { doc } = boot();
   const exp = doc.getElementById('exportBtn');
   const imp = doc.getElementById('importBtn');
+  const his = doc.getElementById('historyBtn');
   doc.getElementById('menuBtn').onclick();
   const key = (k, target) => fire(doc, 'keydown', { key: k, target, preventDefault() {} });
   key('ArrowDown', exp);
   assert.equal(FakeEl.active, imp);
   key('ArrowDown', imp);
+  assert.equal(FakeEl.active, his);
+  key('ArrowDown', his);
   assert.equal(FakeEl.active, exp, 'da la vuelta');
   key('ArrowUp', exp);
-  assert.equal(FakeEl.active, imp);
-  key('Home', imp);
+  assert.equal(FakeEl.active, his);
+  key('Home', his);
   assert.equal(FakeEl.active, exp);
   key('End', exp);
-  assert.equal(FakeEl.active, imp);
-  key('Tab', imp);
+  assert.equal(FakeEl.active, his);
+  key('Tab', his);
   assert.equal(doc.getElementById('headerMenu').hidden, true);
 });
 

@@ -39,9 +39,11 @@
         <div class="header-menu" id="headerMenu" role="menu" aria-label="Más opciones" hidden>
           <button class="header-menu-item" id="exportBtn" type="button" role="menuitem">Exportar backup</button>
           <button class="header-menu-item" id="importBtn" type="button" role="menuitem">Importar backup</button>
+          <button class="header-menu-item" id="historyBtn" type="button" role="menuitem">Importar historial de tiempo</button>
         </div>
       </div>
       <input type="file" id="importFileInput" accept="application/json,.json" hidden />
+      <input type="file" id="historyFileInput" accept="application/json,.json" hidden />
     </div>
   </div>
 
@@ -131,6 +133,7 @@
   </div>
 
   <div id="importPreview" class="modal"></div>
+  <div id="historyImport" class="modal"></div>
 
   <script src="js/app.js"></script>
 </body>

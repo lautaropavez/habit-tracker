@@ -649,6 +649,7 @@ select {
 .calendar-day.completed .calendar-day-num,
 .calendar-day.skipped .calendar-day-num,
 .calendar-day.quantity-met .calendar-day-num,
+.calendar-day.quantity-zero .calendar-day-num,
 .calendar-day.quantity-partial .calendar-day-num {
   position: absolute;
   top: 3px;
@@ -691,6 +692,17 @@ select {
 .calendar-day.quantity-met .calendar-day-check,
 .calendar-day.quantity-partial .calendar-day-check {
   color: var(--green-deep);
+}
+
+/* Cero explícito (tiempo): borde fino sólido y un "0" visible; distinto de
+   la ausencia (celda neutra) y de SKIP (borde punteado y ↷). */
+.calendar-day.quantity-zero {
+  background: var(--ivory);
+  border: 1px solid var(--text-3);
+}
+
+.calendar-day.quantity-zero .calendar-day-check {
+  color: var(--text-2);
 }
 
 /* SKIP: borde punteado grueso + símbolo ↷ (no depende solo del color). */
@@ -1055,6 +1067,31 @@ select {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 8px;
+}
+
+.btn-quantity-skip {
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+/* ---------- Importación de historial de tiempo ---------- */
+.history-plan {
+  margin-bottom: 4px;
+}
+
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--stone);
+  font-size: 14px;
+}
+
+.history-note {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 10px 0;
 }
 
 /* ---------- Importación y recuperación ---------- */

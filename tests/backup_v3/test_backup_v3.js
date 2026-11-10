@@ -167,7 +167,10 @@ test('v3: un completado false con skip del mismo dia es valido (false no es comp
 });
 
 test('v3: skips invalidos', () => {
-  assertFatal(v3({ skips: { [D2]: { h4: true } } }), /no es booleano/);
+  // SKIP es válido para un hábito de tiempo si ese día no tiene registro...
+  assert.equal(validate(v3({ skips: { [D2]: { h4: true } } })).ok, true);
+  // ...pero no coexiste con minutos ni con un cero explícito (h4 tiene un 0 en D1)
+  assertFatal(v3({ skips: { [D1]: { h4: true } } }), /Omitido y cantidad registrada a la vez/);
   assertFatal(v3({ skips: { [D2]: { nope: true } } }), /huérfano/);
   assertFatal(v3({ skips: { [D2]: { h1: false } } }), /Valor de omitido inválido/);
   assertFatal(v3({ skips: { [D2]: { h1: 1 } } }), /Valor de omitido inválido/);
@@ -238,7 +241,7 @@ test('export: validateExportState rechaza datos inconsistentes de skips/archived
   const base = v3();
   const cases = [
     [{ ...seedFromBackup(base), skips: JSON.stringify({ [D1]: { h1: true } }) }, /a la vez/],
-    [{ ...seedFromBackup(base), skips: JSON.stringify({ [D2]: { h4: true } }) }, /no es booleano/],
+    [{ ...seedFromBackup(base), skips: JSON.stringify({ [D1]: { h4: true } }) }, /cantidad registrada a la vez/],
     [{ ...seedFromBackup(base), skips: JSON.stringify({ [D2]: { zz: true } }) }, /huérfano/],
     [{ ...seedFromBackup(base), skips: JSON.stringify({ [D2]: { h1: false } }) }, /inválido/],
     [{ ...seedFromBackup(base), skips: JSON.stringify({ '2099-01-01': { h1: true } }) }, /futura/],

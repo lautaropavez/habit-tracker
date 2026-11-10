@@ -558,10 +558,79 @@ function writeActualMinutes(habitId, dateStr, newActualMinutes) {
   if (!isSafeNonNegativeInt(newActualMinutes)) return false;
 
   const plannedMinutes = getPlannedMinutes(habitId, dateStr);
-  if (!state.quantities[dateStr]) state.quantities[dateStr] = {};
-  state.quantities[dateStr][habitId] = { actualMinutes: newActualMinutes, plannedMinutes };
-  saveData();
-  return true;
+  // Escribir minutos reemplaza un SKIP de ese día (nunca coexisten).
+  return commitQuantitativeDay(dateStr, () => {
+    if (!state.quantities[dateStr]) state.quantities[dateStr] = {};
+    state.quantities[dateStr][habitId] = { actualMinutes: newActualMinutes, plannedMinutes };
+    clearSkip(dateStr, habitId);
+  });
+}
+
+// Aplica un cambio sobre un día de un hábito de tiempo (quantities y skips de
+// esa fecha) y lo persiste. Si la persistencia falla (por ejemplo cuota
+// llena), devuelve la memoria al estado exacto anterior y vuelve a intentar
+// dejar el almacenamiento igual a la memoria; devuelve false.
+function commitQuantitativeDay(dateStr, mutate) {
+  const copy = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+  const prevQuantities = copy(state.quantities[dateStr]);
+  const prevSkips = copy(state.skips[dateStr]);
+  mutate();
+  let saved;
+  try {
+    saved = saveData();
+  } catch (e) {
+    saved = { ok: false };
+  }
+  if (saved.ok) return true;
+  if (prevQuantities === undefined) delete state.quantities[dateStr];
+  else state.quantities[dateStr] = prevQuantities;
+  if (prevSkips === undefined) delete state.skips[dateStr];
+  else state.skips[dateStr] = prevSkips;
+  try { saveData(); } catch (e) { /* queda para el próximo guardado */ }
+  return false;
+}
+
+// Estado de un día de un hábito de tiempo: 'minutes' (hay un registro, aunque
+// sea un cero explícito), 'skipped' (SKIP, sin registro) o 'none' (ausencia).
+// Un dato inconsistente con ambos se lee como minutos.
+function getQuantitativeDayState(habitId, dateStr) {
+  if (hasOwnKey(state.quantities[dateStr], habitId)) return 'minutes';
+  if (state.skips[dateStr]?.[habitId] === true) return 'skipped';
+  return 'none';
+}
+
+function deleteQuantityEntry(dateStr, habitId) {
+  const entry = state.quantities[dateStr];
+  if (!entry || typeof entry !== 'object') return;
+  delete entry[habitId];
+  if (Object.keys(entry).length === 0) delete state.quantities[dateStr];
+}
+
+// Marca (o quita) SKIP en un día de un hábito de tiempo. Marcar SKIP elimina
+// el registro de minutos de ese día (incluido un cero explícito); quitarlo
+// deja el día sin registro. Valida antes de tocar nada; no admite fechas
+// futuras. Las fechas anteriores a createdAt sí se pueden editar.
+function setQuantitativeSkip(habitId, dateStr, skipped) {
+  if (hasStorageCorruption()) return { ok: false, reason: 'storage-corrupted' };
+  const habit = state.habits.find(h => h.id === habitId);
+  if (!habit) return { ok: false, reason: 'unknown-habit' };
+  if (habit.kind !== 'quantitative') return { ok: false, reason: 'not-quantitative' };
+  const date = typeof dateStr === 'string' ? parseLocalDate(dateStr) : null;
+  if (!date) return { ok: false, reason: 'invalid-date' };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (date > today) return { ok: false, reason: 'future-date' };
+
+  const ok = commitQuantitativeDay(dateStr, () => {
+    if (skipped) {
+      deleteQuantityEntry(dateStr, habitId);
+      if (!state.skips[dateStr]) state.skips[dateStr] = {};
+      state.skips[dateStr][habitId] = true;
+    } else {
+      clearSkip(dateStr, habitId);
+    }
+  });
+  return ok ? { ok: true } : { ok: false, reason: 'storage-error' };
 }
 
 // Incremento rápido (+5/-5 min). El piso es 0: nunca permite cantidades
@@ -821,11 +890,11 @@ function validateExportState() {
       if (!seenIds.has(habitId)) {
         return { ok: false, error: `Omitido huérfano: "${dateKey}" referencia un hábito inexistente.` };
       }
-      if (habitKindById.get(habitId) !== 'boolean') {
-        return { ok: false, error: `Omitido "${dateKey}" referencia un hábito que no es booleano.` };
-      }
       if (state.completions[dateKey] && state.completions[dateKey][habitId] === true) {
         return { ok: false, error: `Omitido y completado a la vez en "${dateKey}".` };
+      }
+      if (habitKindById.get(habitId) === 'quantitative' && hasOwnKey(state.quantities[dateKey], habitId)) {
+        return { ok: false, error: `Omitido y cantidad registrada a la vez en "${dateKey}".` };
       }
     }
   }
@@ -1271,11 +1340,14 @@ function validateBackup(rawText) {
         if (!seenIds.has(habitId)) {
           return fail(`Omitido huérfano: "${dateKey}" referencia un hábito inexistente.`);
         }
-        if (habitKindById.get(habitId) !== 'boolean') {
-          return fail(`Omitido "${dateKey}" referencia un hábito que no es booleano.`);
-        }
+        // SKIP vale para hábitos booleanos y de tiempo, pero nunca coexiste
+        // con un registro del mismo día: ni un completado (booleano) ni una
+        // cantidad, incluido un cero explícito (tiempo).
         if (outCompletions[dateKey] && outCompletions[dateKey][habitId] === true) {
           return fail(`Omitido y completado a la vez en "${dateKey}".`);
+        }
+        if (habitKindById.get(habitId) === 'quantitative' && outQuantities[dateKey] && hasOwnKey(outQuantities[dateKey], habitId)) {
+          return fail(`Omitido y cantidad registrada a la vez en "${dateKey}".`);
         }
         skipCount++;
         if (skipCount > MAX_IMPORT_TRUE_ENTRIES) {
@@ -1876,6 +1948,613 @@ function openImportPicker() {
   document.getElementById('importFileInput').click();
 }
 
+// =======================================================================
+// Importación de historial de tiempo (archivo JSON privado, versión 1)
+//
+// Agrega registros de minutos a UN hábito de tiempo existente sin tocar el
+// esquema de Backup v3: cada registro nuevo es exactamente el que escribe la
+// app al guardar minutos, quantities[fecha][id] = {actualMinutes,
+// plannedMinutes: null}. Solo inserta: una fecha que ya tiene cualquier
+// estado (minutos, un cero explícito, SKIP o un completado) es un conflicto
+// y queda intacta. Un cero se conserva como cero; una fecha ausente sigue
+// ausente.
+//
+// SKIP se guarda en `skips` (estructura separada, igual que en los hábitos
+// booleanos); nunca coexiste con un registro de minutos del mismo día.
+//
+// createdAt: las estadísticas nunca cuentan antes de createdAt. Para que un
+// historial antiguo no quede invisible, una importación confirmada adelanta
+// (nunca atrasa) el createdAt del hábito a la fecha importada más antigua.
+// Solo lo hace este importador; el Calendario manual no toca createdAt.
+// =======================================================================
+const HISTORY_VERSION = 1;
+const HISTORY_MAX_BYTES = 2 * 1024 * 1024;
+const HISTORY_MAX_DAILY_MINUTES = TIME_MAX_HOURS * 60;
+const HISTORY_SKIP = 'SKIP';
+
+function isHistoryObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwnKey(obj, key) {
+  return obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function historyKeyLabel(key) {
+  const text = String(key);
+  return text.length > 24 ? `${text.slice(0, 24)}…` : text;
+}
+
+// Pura: no toca DOM, storage ni red. Rechaza todo lo que no sea exactamente
+// la estructura esperada; nunca corrige ni trunca en silencio.
+function validateHistoryFile(rawText) {
+  const fail = (fatal) => ({ ok: false, fatal, data: null });
+  if (typeof rawText !== 'string') return fail('Contenido inválido.');
+  if (utf8ByteLength(rawText) > HISTORY_MAX_BYTES) return fail('El archivo supera el límite de 2 MB.');
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText.replace(/^﻿/, ''));
+  } catch (e) {
+    return fail('El archivo no es JSON válido.');
+  }
+  if (!isHistoryObject(parsed)) return fail('La raíz del historial debe ser un objeto.');
+
+  const ROOT = ['version', 'habit', 'unit', 'range', 'records'];
+  const unknownRoot = Object.keys(parsed).filter(k => !ROOT.includes(k));
+  if (unknownRoot.length > 0) return fail(`Campo desconocido en la raíz: "${historyKeyLabel(unknownRoot[0])}".`);
+  for (const k of ROOT) {
+    if (!hasOwnKey(parsed, k)) return fail(`Falta el campo "${k}".`);
+  }
+
+  if (parsed.version !== HISTORY_VERSION) return fail(`Versión no admitida: "version" debe ser ${HISTORY_VERSION}.`);
+  if (parsed.unit !== 'minutes') return fail('La unidad debe ser "minutes".');
+  if (typeof parsed.habit !== 'string' || parsed.habit.length === 0 || countCodePoints(parsed.habit) > 200 ||
+      hasControlChars(parsed.habit)) {
+    return fail('El nombre del hábito del archivo no es válido (1 a 200 caracteres, sin caracteres de control).');
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (!isHistoryObject(parsed.range) || Object.keys(parsed.range).length !== 2 ||
+      !hasOwnKey(parsed.range, 'from') || !hasOwnKey(parsed.range, 'to')) {
+    return fail('"range" debe tener exactamente "from" y "to".');
+  }
+  const fromDate = parseLocalDate(parsed.range.from);
+  const toDate = parseLocalDate(parsed.range.to);
+  if (!fromDate || !toDate) return fail('El rango tiene una fecha inválida (usá AAAA-MM-DD).');
+  if (fromDate > toDate) return fail('El rango es inválido: "from" es posterior a "to".');
+  if (toDate > today) return fail('El rango llega a una fecha futura.');
+
+  if (!isHistoryObject(parsed.records)) return fail('"records" debe ser un objeto.');
+  const recordsIn = toNullProtoCopy(parsed.records);
+  const keys = Object.keys(recordsIn);
+  if (keys.length === 0) return fail('El archivo no contiene registros.');
+  if (keys.length > MAX_IMPORT_COMPLETION_DATES) {
+    return fail(`Demasiados registros (máximo ${MAX_IMPORT_COMPLETION_DATES}).`);
+  }
+
+  const records = [];
+  for (const key of keys.sort()) {
+    const label = historyKeyLabel(key);
+    const date = parseLocalDate(key);
+    if (!date) return fail(`Fecha inválida: "${label}" (usá AAAA-MM-DD).`);
+    if (date > today) return fail(`Fecha futura: "${label}".`);
+    if (key < parsed.range.from || key > parsed.range.to) return fail(`La fecha "${label}" está fuera del rango declarado.`);
+
+    const value = recordsIn[key];
+    if (value === HISTORY_SKIP) {
+      records.push({ date: key, kind: 'skip', minutes: null });
+    } else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+      if (value > HISTORY_MAX_DAILY_MINUTES) {
+        return fail(`"${label}": ${value} min supera las 24 horas de un día.`);
+      }
+      records.push({ date: key, kind: 'minutes', minutes: value });
+    } else {
+      return fail(`Valor inválido en "${label}": debe ser un entero de minutos (0 o más) o "SKIP".`);
+    }
+  }
+
+  return {
+    ok: true,
+    fatal: null,
+    data: { habitName: parsed.habit, from: parsed.range.from, to: parsed.range.to, records }
+  };
+}
+
+// Estado que ya tiene un hábito en una fecha, sobre una foto de las cuatro
+// claves. Cualquier presencia cuenta (un cero explícito también): se usa
+// presencia de la clave, nunca el valor.
+function readHistoryDayState(snap, habitId, date) {
+  const hasQuantity = hasOwnKey(snap.quantities, date) && hasOwnKey(snap.quantities[date], habitId);
+  const quantity = hasQuantity ? snap.quantities[date][habitId] : null;
+  return {
+    hasQuantity,
+    minutes: hasQuantity && quantity && Number.isSafeInteger(quantity.actualMinutes) ? quantity.actualMinutes : null,
+    skipped: hasOwnKey(snap.skips, date) && hasOwnKey(snap.skips[date], habitId),
+    completed: hasOwnKey(snap.completions, date) && snap.completions[date][habitId] === true
+  };
+}
+
+function isHistoryDayEmpty(dayState) {
+  return !dayState.hasQuantity && !dayState.skipped && !dayState.completed;
+}
+
+function describeHistoryRecord(rec) {
+  if (rec.kind === 'skip') return 'SKIP';
+  return rec.minutes === 0 ? '0 min (cero explícito)' : formatMinutesText(rec.minutes);
+}
+
+function describeHistoryDayState(dayState) {
+  const parts = [];
+  if (dayState.hasQuantity) {
+    parts.push(dayState.minutes === 0 ? '0 min (cero explícito)' : formatMinutesText(dayState.minutes === null ? 0 : dayState.minutes));
+  }
+  if (dayState.skipped) parts.push('SKIP');
+  if (dayState.completed) parts.push('completado');
+  return parts.join(' + ');
+}
+
+function historyDayMatches(rec, dayState) {
+  if (rec.kind === 'minutes') {
+    return dayState.hasQuantity && !dayState.skipped && !dayState.completed && dayState.minutes === rec.minutes;
+  }
+  return dayState.skipped && !dayState.hasQuantity && !dayState.completed;
+}
+
+// Pura: calcula qué se importaría en el hábito `habitId` sin escribir nada.
+// `snap` = { habits, completions, quantities, skips }.
+function planHistoryImport(data, habitId, snap) {
+  const habit = Array.isArray(snap.habits) ? snap.habits.find(h => h && h.id === habitId) : null;
+  if (!habit) return { ok: false, error: 'Elegí el hábito donde se van a importar los registros.' };
+  if (habit.kind !== 'quantitative') return { ok: false, error: 'El hábito destino debe ser de tipo "Registrar tiempo".' };
+  if (habit.archived === true) return { ok: false, error: 'El hábito destino está archivado.' };
+
+  const counts = { total: data.records.length, positive: 0, zeros: 0, skips: 0 };
+  const toImport = [];
+  const conflicts = [];
+  let sameCount = 0;
+  let beforeCreated = 0;
+  let importMinutes = 0;
+
+  for (const rec of data.records) {
+    if (rec.kind === 'skip') counts.skips++;
+    else if (rec.minutes === 0) counts.zeros++;
+    else counts.positive++;
+
+    const dayState = readHistoryDayState(snap, habitId, rec.date);
+    if (isHistoryDayEmpty(dayState)) {
+      toImport.push(rec);
+      if (rec.kind === 'minutes') importMinutes += rec.minutes;
+      if (typeof habit.createdAt === 'string' && rec.date < habit.createdAt) beforeCreated++;
+    } else {
+      // Cualquier estado existente (minutos, cero explícito, SKIP) es un
+      // conflicto y queda intacto, aunque coincida con el archivo.
+      const identical = historyDayMatches(rec, dayState);
+      if (identical) sameCount++;
+      conflicts.push({
+        date: rec.date,
+        incoming: describeHistoryRecord(rec),
+        existing: describeHistoryDayState(dayState),
+        identical
+      });
+    }
+  }
+
+  // createdAt solo se mueve hacia atrás, hasta la fecha importada más antigua.
+  const currentCreatedAt = typeof habit.createdAt === 'string' ? habit.createdAt : null;
+  const earliest = toImport.length > 0 ? toImport[0].date : null; // records ya viene ordenado
+  const newCreatedAt = earliest !== null && currentCreatedAt !== null && earliest < currentCreatedAt
+    ? earliest
+    : currentCreatedAt;
+  return {
+    ok: true,
+    habitId,
+    habitName: habit.name,
+    from: data.from,
+    to: data.to,
+    counts,
+    toImport,
+    toImportCount: toImport.length,
+    importMinutes,
+    skipsToImport: toImport.filter(r => r.kind === 'skip').length,
+    sameCount,
+    conflicts,
+    beforeCreated,
+    currentCreatedAt,
+    newCreatedAt,
+    createdAtChanges: newCreatedAt !== currentCreatedAt,
+    canApply: toImport.length > 0,
+    fingerprint: JSON.stringify([habitId, toImport, conflicts.map(c => c.date), sameCount, newCreatedAt])
+  };
+}
+
+function parseHistoryRaw(raw, isHabits) {
+  if (raw === null) return { ok: true, value: isHabits ? [] : {} };
+  try {
+    const value = JSON.parse(raw);
+    const valid = isHabits ? Array.isArray(value) : isHistoryObject(value);
+    return valid ? { ok: true, value } : { ok: false };
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
+function sumHabitMinutes(quantities, habitId) {
+  let count = 0;
+  let minutes = 0;
+  for (const date of Object.keys(quantities)) {
+    if (hasOwnKey(quantities[date], habitId)) {
+      count++;
+      minutes += quantities[date][habitId].actualMinutes;
+    }
+  }
+  return { count, minutes };
+}
+
+function sumHabitSkips(skips, habitId) {
+  let count = 0;
+  for (const date of Object.keys(skips)) {
+    if (hasOwnKey(skips[date], habitId)) count++;
+  }
+  return count;
+}
+
+// Aplica el historial de forma atómica. Escribe solo las claves que cambian
+// (quantities, skips y, si createdAt se adelanta, habits); completions queda
+// byte a byte igual (se verifica). Usa el mismo snapshot + marcador +
+// rollback que la importación de backup: el snapshot guarda las cuatro
+// claves crudas (incluido createdAt dentro de habits) y ante cualquier fallo,
+// también una cuota llena, se restauran tal como estaban.
+function applyHistoryImport(data, habitId, expectedFingerprint) {
+  const fail = (error) => ({ ok: false, error });
+  if (hasStorageCorruption()) return fail('El almacenamiento está en modo solo lectura. No se importó nada.');
+  if (hasPendingImportRecovery()) {
+    return fail('Hay una importación reciente o sin cerrar: recargá la página y volvé a intentar. No se modificaron tus datos.');
+  }
+
+  const keys = ['habits', 'completions', 'quantities', 'skips'];
+  const raws = {};
+  for (const key of keys) {
+    const read = readExactRaw(key);
+    if (!read.ok) return fail('No se pudo leer el estado actual antes de importar. No se modificaron tus datos.');
+    raws[key] = read.value;
+  }
+  const parsedKeys = {};
+  for (const key of keys) {
+    const parsed = parseHistoryRaw(raws[key], key === 'habits');
+    if (!parsed.ok) return fail('Tus datos guardados no se pudieron leer con seguridad. No se importó nada.');
+    parsedKeys[key] = parsed.value;
+  }
+
+  const plan = planHistoryImport(data, habitId, parsedKeys);
+  if (!plan.ok) return fail(plan.error);
+  if (expectedFingerprint !== undefined && plan.fingerprint !== expectedFingerprint) {
+    return fail('Tus datos cambiaron desde la vista previa. No se importó nada; abrí la importación de nuevo.');
+  }
+  if (plan.toImport.length === 0) return fail('No hay registros nuevos para importar.');
+
+  const nextQuantities = JSON.parse(JSON.stringify(parsedKeys.quantities));
+  const nextSkips = JSON.parse(JSON.stringify(parsedKeys.skips));
+  let quantitiesChanged = false;
+  let skipsChanged = false;
+  for (const rec of plan.toImport) {
+    const occupied = hasOwnKey(nextQuantities[rec.date], habitId) || hasOwnKey(nextSkips[rec.date], habitId);
+    if (occupied) return fail('Tus datos guardados cambiaron de forma inesperada. No se importó nada.');
+    if (rec.kind === 'minutes') {
+      if (!hasOwnKey(nextQuantities, rec.date)) nextQuantities[rec.date] = {};
+      if (!isHistoryObject(nextQuantities[rec.date])) return fail('Tus datos guardados cambiaron de forma inesperada. No se importó nada.');
+      nextQuantities[rec.date][habitId] = { actualMinutes: rec.minutes, plannedMinutes: null };
+      quantitiesChanged = true;
+    } else {
+      if (!hasOwnKey(nextSkips, rec.date)) nextSkips[rec.date] = {};
+      if (!isHistoryObject(nextSkips[rec.date])) return fail('Tus datos guardados cambiaron de forma inesperada. No se importó nada.');
+      nextSkips[rec.date][habitId] = true;
+      skipsChanged = true;
+    }
+  }
+  let nextHabits = null;
+  if (plan.createdAtChanges) {
+    nextHabits = JSON.parse(JSON.stringify(parsedKeys.habits));
+    nextHabits.find(h => h && h.id === habitId).createdAt = plan.newCreatedAt;
+  }
+
+  const qBefore = sumHabitMinutes(parsedKeys.quantities, habitId);
+  const expectedQ = { count: qBefore.count + plan.toImport.filter(r => r.kind === 'minutes').length, minutes: qBefore.minutes + plan.importMinutes };
+  const expectedSkips = sumHabitSkips(parsedKeys.skips, habitId) + plan.skipsToImport;
+
+  const newStrings = {
+    habits: nextHabits ? JSON.stringify(nextHabits) : raws.habits,
+    quantities: quantitiesChanged ? JSON.stringify(nextQuantities) : raws.quantities,
+    skips: skipsChanged ? JSON.stringify(nextSkips) : raws.skips
+  };
+  const snapshotStr = buildSnapshot(raws.habits, raws.completions, raws.quantities, raws.skips);
+  const markerStr = buildMarker();
+  const capacity = estimateImportCapacity(newStrings.habits || '', raws.completions || '', newStrings.quantities || '',
+    newStrings.skips || '', snapshotStr, markerStr);
+  if (capacity.obviouslyTooLarge) return fail('El historial es demasiado grande para el almacenamiento disponible.');
+
+  if (!writeAndVerify(SNAPSHOT_KEY, snapshotStr)) {
+    return fail('No se pudo escribir o verificar el snapshot de seguridad. No se modificaron tus datos.');
+  }
+  if (!writeAndVerify(MARKER_KEY, markerStr)) {
+    return fail('No se pudo escribir o verificar el marcador de importación. No se modificaron tus datos. ' +
+      'El snapshot de seguridad queda pendiente de limpieza en el próximo inicio.');
+  }
+
+  let writeOk = true;
+  if (quantitiesChanged) writeOk = writeAndVerify('quantities', newStrings.quantities);
+  if (writeOk && skipsChanged) writeOk = writeAndVerify('skips', newStrings.skips);
+  if (writeOk && nextHabits) writeOk = writeAndVerify('habits', newStrings.habits);
+  if (writeOk) {
+    // Lo que no se escribió debe seguir idéntico (completions siempre).
+    for (const key of keys) {
+      if (key === 'habits' && nextHabits) continue;
+      if (key === 'quantities' && quantitiesChanged) continue;
+      if (key === 'skips' && skipsChanged) continue;
+      const again = readExactRaw(key);
+      if (!again.ok || again.value !== raws[key]) writeOk = false;
+    }
+  }
+  if (writeOk) {
+    // Verificación de totales sobre lo realmente guardado.
+    const storedQ = parseHistoryRaw(readExactRaw('quantities').value, false);
+    const storedS = parseHistoryRaw(readExactRaw('skips').value, false);
+    const storedH = parseHistoryRaw(readExactRaw('habits').value, true);
+    const afterQ = storedQ.ok ? sumHabitMinutes(storedQ.value, habitId) : null;
+    const storedHabit = storedH.ok ? storedH.value.find(h => h && h.id === habitId) : null;
+    writeOk = !!afterQ && afterQ.count === expectedQ.count && afterQ.minutes === expectedQ.minutes &&
+      storedS.ok && sumHabitSkips(storedS.value, habitId) === expectedSkips &&
+      !!storedHabit && storedHabit.createdAt === plan.newCreatedAt;
+  }
+  if (!writeOk) {
+    return finishWithRollbackOrBlock(raws.habits, raws.completions, raws.quantities, raws.skips,
+      'No se pudieron escribir o verificar los datos importados.');
+  }
+
+  let markerRemoved = false;
+  try {
+    localStorage.removeItem(MARKER_KEY);
+    markerRemoved = localStorage.getItem(MARKER_KEY) === null;
+  } catch (e) {
+    markerRemoved = false;
+  }
+  if (!markerRemoved) {
+    return finishWithRollbackOrBlock(raws.habits, raws.completions, raws.quantities, raws.skips,
+      'La importación no pudo cerrarse de forma segura y fue revertida.');
+  }
+
+  loadData();
+  render();
+  return {
+    ok: true,
+    imported: plan.toImport.length,
+    minutes: plan.importMinutes,
+    skips: plan.skipsToImport,
+    createdAt: plan.newCreatedAt,
+    createdAtChanged: plan.createdAtChanges
+  };
+}
+
+// ---- Interfaz: vista previa antes de aplicar. Todo dato del archivo se
+// muestra con textContent, nunca con innerHTML. ----
+function closeHistoryImport() {
+  const container = document.getElementById('historyImport');
+  container.classList.remove('active');
+  container.innerHTML = '';
+  document.getElementById('historyFileInput').value = '';
+}
+
+function getEligibleHistoryTargets() {
+  return state.habits.filter(h => h.kind === 'quantitative' && h.archived !== true);
+}
+
+function addHistoryRow(parent, label, value) {
+  const row = document.createElement('div');
+  row.className = 'history-row';
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+  const valueEl = document.createElement('strong');
+  valueEl.textContent = String(value);
+  row.appendChild(labelEl);
+  row.appendChild(valueEl);
+  parent.appendChild(row);
+}
+
+const HISTORY_CONFLICTS_SHOWN = 20;
+
+function renderHistoryPlan(box, confirmBtn, data, habitId) {
+  box.innerHTML = '';
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Importar';
+  confirmBtn.onclick = null;
+
+  if (!habitId) {
+    const hint = document.createElement('div');
+    hint.className = 'history-note';
+    hint.textContent = 'Elegí el hábito donde se van a importar los registros.';
+    box.appendChild(hint);
+    return;
+  }
+  const plan = planHistoryImport(data, habitId, {
+    habits: state.habits, completions: state.completions, quantities: state.quantities, skips: state.skips
+  });
+  if (!plan.ok) {
+    const err = document.createElement('div');
+    err.className = 'import-fatal';
+    err.textContent = plan.error;
+    box.appendChild(err);
+    return;
+  }
+
+  addHistoryRow(box, 'Hábito destino', plan.habitName);
+  addHistoryRow(box, 'Rango de fechas', `${plan.from} a ${plan.to}`);
+  addHistoryRow(box, 'Registros en el archivo', plan.counts.total);
+  addHistoryRow(box, 'Con minutos (más de 0)', plan.counts.positive);
+  addHistoryRow(box, 'Ceros explícitos', plan.counts.zeros);
+  addHistoryRow(box, 'Días SKIP', plan.counts.skips);
+  addHistoryRow(box, 'Nuevos para importar', `${plan.toImportCount} (${formatMinutesText(plan.importMinutes)})`);
+  addHistoryRow(box, 'Conflictos (se dejan intactos)', plan.conflicts.length);
+  if (plan.conflicts.length > 0) {
+    addHistoryRow(box, 'De ellos, idénticos al archivo', plan.sameCount);
+  }
+  addHistoryRow(box, 'Fecha de creación actual del hábito', plan.currentCreatedAt || '—');
+  if (plan.createdAtChanges) {
+    addHistoryRow(box, 'Fecha de creación resultante', plan.newCreatedAt);
+  }
+
+  if (plan.conflicts.length > 0) {
+    const title = document.createElement('div');
+    title.className = 'import-warnings-title';
+    title.textContent = 'Fechas que ya tienen un registro y no se modifican:';
+    box.appendChild(title);
+    const list = document.createElement('ul');
+    list.className = 'import-warnings-list';
+    plan.conflicts.slice(0, HISTORY_CONFLICTS_SHOWN).forEach(c => {
+      const li = document.createElement('li');
+      li.textContent = c.identical
+        ? `${c.date}: ya está registrado igual que en el archivo (${c.existing})`
+        : `${c.date}: el archivo dice ${c.incoming}; ahora hay ${c.existing}`;
+      list.appendChild(li);
+    });
+    if (plan.conflicts.length > HISTORY_CONFLICTS_SHOWN) {
+      const more = document.createElement('li');
+      more.textContent = `y ${plan.conflicts.length - HISTORY_CONFLICTS_SHOWN} más`;
+      list.appendChild(more);
+    }
+    box.appendChild(list);
+  }
+
+  const note = document.createElement('div');
+  note.className = 'history-note';
+  if (plan.toImportCount === 0) {
+    note.textContent = 'No hay nada nuevo para importar.';
+  } else {
+    note.textContent = plan.createdAtChanges
+      ? `No se modifica ningún registro existente. Al confirmar, la fecha de creación del hábito pasa de ${plan.currentCreatedAt} a ${plan.newCreatedAt} para que el historial importado cuente en las estadísticas.`
+      : 'No se modifica ningún registro existente.';
+  }
+  box.appendChild(note);
+
+  if (plan.canApply) {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = `Importar ${plan.toImportCount} registros`;
+    confirmBtn.onclick = () => {
+      const result = applyHistoryImport(data, habitId, plan.fingerprint);
+      closeHistoryImport();
+      if (result.ok) {
+        alert(`Se importaron ${result.imported} registros (${formatMinutesText(result.minutes)}, ${result.skips} SKIP). No se modificó ningún registro existente.` +
+          (result.createdAtChanged ? ` La fecha de creación del hábito ahora es ${result.createdAt}.` : ''));
+      } else {
+        alert(`No se pudo importar: ${result.error}`);
+      }
+    };
+  }
+}
+
+function renderHistoryImport(validation) {
+  const container = document.getElementById('historyImport');
+  container.innerHTML = '';
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = 'Importar historial de tiempo';
+  content.appendChild(title);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn-secondary';
+  cancelBtn.onclick = closeHistoryImport;
+
+  const targets = validation.ok ? getEligibleHistoryTargets() : [];
+  if (!validation.ok || targets.length === 0) {
+    const errorP = document.createElement('div');
+    errorP.className = 'import-fatal';
+    errorP.textContent = validation.ok
+      ? 'No hay hábitos de tipo "Registrar tiempo" activos donde importar. Creá uno primero.'
+      : `No se puede importar: ${validation.fatal}`;
+    content.appendChild(errorP);
+    cancelBtn.textContent = 'Cerrar';
+    actions.appendChild(cancelBtn);
+  } else {
+    const data = validation.data;
+    const intro = document.createElement('div');
+    intro.className = 'history-note';
+    intro.textContent = `El archivo dice «${data.habitName}». Elegí a qué hábito pertenece: el nombre solo es una pista.`;
+    content.appendChild(intro);
+
+    const label = document.createElement('label');
+    label.setAttribute('for', 'historyTargetSelect');
+    label.textContent = 'Hábito destino';
+    const select = document.createElement('select');
+    select.id = 'historyTargetSelect';
+    select.className = 'kind-select';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Elegí un hábito…';
+    select.appendChild(placeholder);
+    targets.forEach(h => {
+      const option = document.createElement('option');
+      option.value = h.id;
+      option.textContent = `${h.icon} ${h.name}${h.name === data.habitName ? ' · coincide con el archivo' : ''}`;
+      select.appendChild(option);
+    });
+    const group = document.createElement('div');
+    group.className = 'form-group';
+    group.appendChild(label);
+    group.appendChild(select);
+    content.appendChild(group);
+
+    const box = document.createElement('div');
+    box.className = 'history-plan';
+    box.setAttribute('aria-live', 'polite');
+    content.appendChild(box);
+
+    cancelBtn.textContent = 'Cancelar';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'btn-primary';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    select.onchange = () => renderHistoryPlan(box, confirmBtn, data, select.value);
+    renderHistoryPlan(box, confirmBtn, data, '');
+  }
+
+  content.appendChild(actions);
+  container.appendChild(content);
+  container.classList.add('active');
+}
+
+function handleHistoryFileChange(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  if (typeof file.size !== 'number' || file.size > HISTORY_MAX_BYTES) {
+    renderHistoryImport({ ok: false, fatal: 'El archivo supera el límite de 2 MB.' });
+    return;
+  }
+  file.text().then(rawText => {
+    renderHistoryImport(validateHistoryFile(rawText));
+  }).catch(() => {
+    renderHistoryImport({ ok: false, fatal: 'No se pudo leer el archivo.' });
+  });
+}
+
+function openHistoryImportPicker() {
+  if (hasStorageCorruption()) {
+    alert('El almacenamiento está en modo solo lectura; no se puede importar ahora.');
+    return;
+  }
+  if (hasPendingImportRecovery()) {
+    alert('Hay una importación reciente o sin cerrar: recargá la página antes de importar de nuevo.');
+    return;
+  }
+  document.getElementById('historyFileInput').click();
+}
+
 // Nombres de vista en el mismo orden que las pestañas/los contenedores del
 // DOM. Única fuente de verdad para traducir índice de pestaña <-> nombre.
 const VIEW_NAMES = ['today', 'calendar', 'stats'];
@@ -1985,7 +2664,7 @@ function toggleTheme() {
 // (exportBackup, openImportPicker) y toda su validación quedan intactas.
 // ---------------------------------------------------------------------
 function getHeaderMenuItems() {
-  return [document.getElementById('exportBtn'), document.getElementById('importBtn')];
+  return [document.getElementById('exportBtn'), document.getElementById('importBtn'), document.getElementById('historyBtn')];
 }
 
 function isHeaderMenuOpen() {
@@ -2054,6 +2733,11 @@ function setupHeaderControls() {
     setHeaderMenuOpen(false, false);
     openImportPicker();
   };
+  document.getElementById('historyBtn').onclick = () => {
+    setHeaderMenuOpen(false, false);
+    openHistoryImportPicker();
+  };
+  document.getElementById('historyFileInput').onchange = handleHistoryFileChange;
   document.addEventListener('keydown', handleHeaderMenuKeydown);
   document.addEventListener('click', handleHeaderMenuOutsideClick);
 }
@@ -2181,9 +2865,14 @@ function createQuantityControls(habit, dateStr, corrupted) {
 
   const summary = document.createElement('div');
   summary.className = 'quantity-summary';
-  summary.textContent = target !== null
-    ? `${formatMinutesText(actual)} / ${formatMinutesText(target)}`
-    : `${formatMinutesText(actual)} (sin objetivo)`;
+  const dayStateNow = getQuantitativeDayState(habit.id, dateStr);
+  if (dayStateNow === 'skipped') {
+    summary.textContent = 'Día omitido (SKIP): no suma minutos ni cuenta como cero';
+  } else {
+    summary.textContent = target !== null
+      ? `${formatMinutesText(actual)} / ${formatMinutesText(target)}`
+      : `${formatMinutesText(actual)} (sin objetivo)`;
+  }
   wrap.appendChild(summary);
 
   if (target !== null) {
@@ -2264,8 +2953,9 @@ function createQuantityControls(habit, dateStr, corrupted) {
       minutesField.input.setAttribute('aria-invalid', 'true');
       return;
     }
-    // Sin cambio real no se escribe nada (evita crear un 0 explícito).
-    if (parsed.total === getActualMinutes(habit.id, dateStr)) {
+    // Sin cambio real no se escribe nada (evita crear un 0 explícito). Un día
+    // en SKIP siempre es un cambio: guardar reemplaza el SKIP por ese valor.
+    if (getQuantitativeDayState(habit.id, dateStr) !== 'skipped' && parsed.total === getActualMinutes(habit.id, dateStr)) {
       errorBox.hidden = true;
       return;
     }
@@ -2288,6 +2978,24 @@ function createQuantityControls(habit, dateStr, corrupted) {
   wrap.appendChild(form);
   wrap.appendChild(errorBox);
   wrap.appendChild(buttonsRow);
+
+  // SKIP: día justificado, distinto de un cero. Marcarlo reemplaza los
+  // minutos de ese día (se pide confirmación si había un registro).
+  const skipBtn = document.createElement('button');
+  skipBtn.type = 'button';
+  skipBtn.className = 'btn btn-quantity btn-quantity-skip';
+  skipBtn.textContent = dayStateNow === 'skipped' ? 'Quitar SKIP' : 'Omitir día (SKIP)';
+  skipBtn.disabled = corrupted;
+  skipBtn.onclick = () => {
+    const markSkip = getQuantitativeDayState(habit.id, dateStr) !== 'skipped';
+    if (markSkip && getQuantitativeDayState(habit.id, dateStr) === 'minutes' &&
+        !confirm('Este día tiene un registro de tiempo. Marcarlo como SKIP lo reemplaza. ¿Continuar?')) {
+      return;
+    }
+    setQuantitativeSkip(habit.id, dateStr, markSkip);
+    render();
+  };
+  wrap.appendChild(skipBtn);
 
   return wrap;
 }
@@ -3189,8 +3897,25 @@ function getCalendarDayDecoration(dateStr, habit) {
   if (!habit) return { stateClass: '', badgeHtml: '', ariaExtra: '' };
 
   if (habit.kind === 'quantitative') {
+    // Cuatro estados distinguibles: ausencia (celda neutra), cero explícito
+    // ("0"), minutos (tiempo) y SKIP (↷, borde punteado).
+    const dayState = getQuantitativeDayState(habit.id, dateStr);
+    if (dayState === 'none') return { stateClass: '', badgeHtml: '', ariaExtra: '' };
+    if (dayState === 'skipped') {
+      return {
+        stateClass: 'skipped',
+        badgeHtml: '<span class="calendar-day-check" aria-hidden="true">↷</span>',
+        ariaExtra: ', omitido'
+      };
+    }
     const actual = getActualMinutes(habit.id, dateStr);
-    if (actual <= 0) return { stateClass: '', badgeHtml: '', ariaExtra: '' };
+    if (actual === 0) {
+      return {
+        stateClass: 'quantity-zero',
+        badgeHtml: '<span class="calendar-day-check calendar-day-qty" aria-hidden="true">0</span>',
+        ariaExtra: ', cero minutos registrados'
+      };
+    }
     const target = habit.target ? habit.target.minutes : null;
     const met = target !== null && actual >= target;
     return {
@@ -3248,15 +3973,24 @@ function calculateQuantityStats(habit) {
 
   const target = habit.target ? habit.target.minutes : null;
   let totalMinutes = 0;
+  let skippedDays = 0;
 
+  // SKIP es neutral: no suma minutos, no cuenta como cero y no entra en
+  // ningún promedio. Los hábitos de tiempo no tienen tasa ni rachas por
+  // período (solo minutos), así que no hay nada más que proteger.
   for (let d = new Date(createdAtDate); d <= today; d = addDays(d, 1)) {
-    totalMinutes += getActualMinutes(habit.id, toLocalDateStr(d));
+    const ds = toLocalDateStr(d);
+    if (getQuantitativeDayState(habit.id, ds) === 'skipped') skippedDays++;
+    else totalMinutes += getActualMinutes(habit.id, ds);
   }
 
   const todayMinutes = getActualMinutes(habit.id, getToday());
-  const todayProgressPct = target !== null ? Math.min(100, Math.round((todayMinutes / target) * 100)) : null;
+  const todaySkipped = getQuantitativeDayState(habit.id, getToday()) === 'skipped';
+  const todayProgressPct = target !== null && !todaySkipped
+    ? Math.min(100, Math.round((todayMinutes / target) * 100))
+    : null;
 
-  return { totalMinutes, todayMinutes, target, todayProgressPct };
+  return { totalMinutes, todayMinutes, target, todayProgressPct, skippedDays, todaySkipped };
 }
 
 // Gráfico de "Últimos 30 días": hoy y los 29 anteriores, en orden
@@ -3280,8 +4014,11 @@ function getChartDays(habit, count = CHART_DAYS) {
     const entry = { dateStr, day: d.getDate(), month: d.getMonth(), isToday: i === 0 };
     if (habit.kind === 'quantitative') {
       entry.value = getActualMinutes(habit.id, dateStr);
-      entry.hasRecord = !!state.quantities[dateStr]?.[habit.id];
-      entry.skipped = false;
+      const hasQuantity = hasOwnKey(state.quantities[dateStr], habit.id);
+      // SKIP es un estado distinto de un cero explícito; con un registro de
+      // minutos (dato inconsistente) manda el registro.
+      entry.skipped = !hasQuantity && state.skips[dateStr]?.[habit.id] === true;
+      entry.hasRecord = hasQuantity || entry.skipped;
     } else {
       const done = !!state.completions[dateStr]?.[habit.id];
       entry.value = done ? 1 : 0;
@@ -3298,6 +4035,7 @@ function getChartDays(habit, count = CHART_DAYS) {
 function describeChartDay(habit, day) {
   const date = `${day.day} de ${CHART_MONTH_ABBR[day.month]}`;
   if (habit.kind === 'quantitative') {
+    if (day.skipped) return `${date}: omitido (SKIP)`;
     if (day.hasRecord || day.value > 0) return `${date}: ${formatMinutesText(day.value)}`;
     return `${date}: ${day.beforeCreated ? 'antes de crear el hábito' : 'sin registro'}`;
   }
@@ -3312,7 +4050,9 @@ function summarizeChartDays(habit, days) {
   if (habit.kind === 'quantitative') {
     const total = days.reduce((sum, d) => sum + d.value, 0);
     const withTime = days.filter(d => d.value > 0).length;
-    return `Últimos ${days.length} días: ${withTime} ${withTime === 1 ? 'día' : 'días'} con tiempo registrado, ${formatMinutesText(total)} en total.`;
+    const skippedQ = days.filter(d => d.skipped).length;
+    const skipText = skippedQ > 0 ? `, ${skippedQ} ${skippedQ === 1 ? 'omitido' : 'omitidos'} (SKIP)` : '';
+    return `Últimos ${days.length} días: ${withTime} ${withTime === 1 ? 'día' : 'días'} con tiempo registrado, ${formatMinutesText(total)} en total${skipText}.`;
   }
   const done = days.filter(d => d.value === 1).length;
   const skipped = days.filter(d => d.skipped).length;
@@ -3401,10 +4141,11 @@ function createQuantityStatsCard(habit) {
   const numbersDiv = document.createElement('div');
   numbersDiv.className = 'stats-numbers';
   [
-    [formatMinutesText(stats.todayMinutes), 'Tiempo hoy'],
+    [stats.todaySkipped ? 'Omitido' : formatMinutesText(stats.todayMinutes), 'Tiempo hoy'],
     [stats.target !== null ? formatMinutesText(stats.target) : 'Sin objetivo', 'Objetivo diario'],
     [stats.todayProgressPct !== null ? `${stats.todayProgressPct}%` : '—', 'Progreso hoy'],
-    [formatMinutesText(stats.totalMinutes), 'Total acumulado']
+    [formatMinutesText(stats.totalMinutes), 'Total acumulado'],
+    [String(stats.skippedDays), 'Días omitidos (SKIP)']
   ].forEach(([value, label]) => {
     const box = document.createElement('div');
     box.className = 'stat-box';

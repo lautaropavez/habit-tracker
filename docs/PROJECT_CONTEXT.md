@@ -115,7 +115,7 @@ No son decisiones de producto abiertas; no se inventan aquí.
 - **Raíz v3**, exactamente: `schemaVersion`, `exportedAt`, `habits`, `completions`, `quantities`, `skips`. v1 y v2 rechazan los campos que no les corresponden (`skips`, `archived`, `freqWindowDays`, período `loop-month`).
 - **Hábito v3:** campos de v1 más `kind` (`boolean` o `quantitative`) y `archived` (booleano obligatorio). Un cuantitativo agrega `unit` (`"minutes"`) y `target` (`{ minutes }` o `null`). `quantities` conserva la regla de v2: la ausencia de entrada es distinta de `actualMinutes: 0`.
 - **Frecuencia heredada de Loop:** `freqPeriod: "loop-month"` con `freqWindowDays: 30` (el denominador original) y `freq: "custom"`; `freqCount` de 1 a 30. En Loop, N/30 no es una ventana fija de 30 días ni un mes calendario; el backup solo **preserva** la fracción. No se simula una ventana ni se convierte a mes calendario. `freqWindowDays` existe únicamente con este período.
-- **`skips`:** `{ "YYYY-MM-DD": { [habitId]: true } }`, solo para hábitos booleanos. Fechas reales y no futuras, sin huérfanos, solo valores `true`. **Nunca** coexiste con una completion `true` de la misma fecha y hábito (fatal al importar y al exportar).
+- **`skips`:** `{ "YYYY-MM-DD": { [habitId]: true } }`, para hábitos **booleanos y de tiempo**. Fechas reales y no futuras, sin huérfanos, solo valores `true`. **Nunca** coexiste con un registro del mismo día: un completado (booleano) ni una cantidad (de tiempo, incluido un cero explícito). Sin cambio de versión ni de estructura; solo se relajó la restricción de tipo (una app anterior rechazaría un backup con SKIP de tiempo). Es fatal al importar y al exportar.
 
 ### Persistencia y recuperación
 
@@ -137,7 +137,7 @@ No son decisiones de producto abiertas; no se inventan aquí.
 - **Fechas editables:** cualquier fecha real, pasada o actual; las futuras no cambian al tocarlas. Esto incluye los días anteriores a `createdAt`: se pueden registrar y corregir (con un tono propio y una etiqueta accesible que avisa que **no cuentan en las estadísticas**, porque ninguna estadística cuenta antes de `createdAt`); `createdAt` y el resto del hábito nunca se modifican. Los hábitos de tiempo ya abrían el editor en cualquier fecha no futura, y sus celdas ahora también se operan con teclado.
 - **Invariante:** nunca completion y skip a la vez. Un dato inconsistente se lee como completado y el siguiente paso lo deja solo en SKIP. Si la persistencia falla, el estado vuelve al anterior.
 - **Hoy** no cambia: el botón alterna completado y no completado; marcar completado un día SKIP reemplaza el SKIP.
-- **Cuantitativos:** no usan el ciclo; el Calendario sigue abriendo el editor de minutos.
+- **Cuantitativos:** no usan el ciclo. Tocar una fecha (cualquier no futura, también anterior a `createdAt`) abre el editor HH:MM, que ofrece «Omitir día (SKIP)» / «Quitar SKIP» (pide confirmación si el día tenía un registro). Cuatro estados distinguibles: ausencia (celda neutra), cero explícito («0»), minutos (tiempo) y SKIP (↷, borde punteado). Marcar SKIP elimina la cantidad de ese día; guardar minutos (o un cero) sobre un SKIP lo elimina; quitar SKIP deja el día sin registro. Los cambios son atómicos: si la persistencia falla, memoria y almacenamiento vuelven al estado anterior.
 - **Accesibilidad:** cada celda editable es un botón (teclado con Enter o espacio) con etiqueta que dice el estado actual y qué hará el toque. Hay una leyenda breve con los tres estados, visible solo para hábitos booleanos.
 
 ### Conversor Loop → Backup v3 (`tools/loop_habits_to_json.py`)
@@ -171,6 +171,14 @@ No son decisiones de producto abiertas; no se inventan aquí.
 
 - El formulario pregunta «¿Cómo querés registrarlo?» con un desplegable: **Marcar como completado** (tipo interno `boolean`) y **Registrar tiempo** (tipo interno `quantitative`, unidad `minutes`), con una ayuda breve que cambia según la opción. Los términos técnicos no se muestran. Al editar, la opción se ve deshabilitada (el tipo no se cambia). No hay unidades nuevas ni cambios de esquema o backup.
 - Estadísticas muestra «Últimos 30 días» (hoy y los 29 anteriores, en orden cronológico, para hábitos de ambos tipos) en lugar del gráfico de 7 días. Mismo criterio diario que antes: completado / SKIP / sin registro (o minutos registrados); no infiere períodos, así que frecuencias semanales, `loop-month` y archivados muestran solo el dato diario y sus métricas no cambian. Un día sin registro anterior a `createdAt` se marca aparte (línea punteada); un registro anterior a `createdAt` nunca se oculta. Eje con 5 fechas (`Hoy` al final), descripción accesible del conjunto y detalle por día en el tooltip. Las barras se reparten el ancho disponible (sin scroll horizontal).
+
+### Importación de historial de tiempo (JSON)
+
+- Menú ⋮ → «Importar historial de tiempo». Archivo `{ version: 1, habit, unit: "minutes", range: {from, to}, records: { "AAAA-MM-DD": entero ≥ 0 | "SKIP" } }`. Se rechaza completo ante cualquier desvío: versión o unidad distintas, campos desconocidos, fechas inválidas, futuras o fuera del rango, floats, negativos, texto, más de 24 h por día o más de 20.000 registros. El nombre `habit` es solo una pista; el destino se elige **por id** entre los hábitos de tiempo activos.
+- Vista previa antes de aplicar: destino, rango, registros, minutos > 0, ceros explícitos, SKIP, nuevos, conflictos (y cuántos son idénticos al archivo) y `createdAt` actual y resultante.
+- **Solo inserta.** Una fecha que ya tiene cualquier estado (minutos, cero explícito, SKIP) es conflicto y queda intacta, aunque coincida. Un cero se guarda como cero; una fecha ausente sigue ausente; SKIP va a `skips`, nunca a `quantities`. Formato guardado: el mismo `quantities[fecha][id] = {actualMinutes, plannedMinutes: null}` de siempre.
+- **`createdAt`:** solo esta importación lo adelanta, hasta la fecha importada más antigua, para que el historial cuente en las estadísticas; nunca lo atrasa. El Calendario manual no lo toca.
+- **Atómica:** snapshot de las cuatro claves crudas (incluido `createdAt`) y marcador; se escriben solo las claves que cambian; se verifican totales y que lo demás quedó idéntico; ante cualquier fallo (también cuota llena) se restaura el estado exacto anterior. Igual que la importación de backup, tras importar hay que recargar la página para importar de nuevo.
 
 ### Limitaciones conocidas
 
