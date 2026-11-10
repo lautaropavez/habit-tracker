@@ -5,18 +5,42 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#1a1a1a" />
+  <meta name="theme-color" content="#F6F3EA" />
   <title>Mis Hábitos</title>
 
   <link rel="stylesheet" href="css/styles.css" />
+  <script>
+    /* Tema guardado: se aplica antes del primer render para no parpadear. */
+    (function () {
+      try {
+        if (localStorage.getItem('habitTracker.theme') === 'dark') {
+          document.documentElement.setAttribute('data-theme', 'dark');
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (m) m.setAttribute('content', '#0A0A0A');
+        }
+      } catch (e) { /* sin storage: tema claro */ }
+    })();
+  </script>
 </head>
 
 <body>
   <div class="header-row">
-    <h1>📊 Mis Hábitos</h1>
+    <h1>Mis Hábitos</h1>
     <div class="header-actions">
-      <button class="btn-export" id="exportBtn" type="button">Exportar backup</button>
-      <button class="btn-export" id="importBtn" type="button">Importar backup</button>
+      <button class="icon-action theme-btn" id="themeBtn" type="button" aria-label="Activar tema Noir Editorial (oscuro)" title="Activar tema Noir Editorial (oscuro)">
+        <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+        <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+        <span class="theme-btn-label" id="themeBtnLabel">Oscuro</span>
+      </button>
+      <div class="header-menu-wrap" id="headerMenuWrap">
+        <button class="icon-action menu-btn" id="menuBtn" type="button" aria-label="Más opciones" aria-haspopup="menu" aria-expanded="false" aria-controls="headerMenu">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.8" fill="currentColor" /><circle cx="12" cy="12" r="1.8" fill="currentColor" /><circle cx="12" cy="19" r="1.8" fill="currentColor" /></svg>
+        </button>
+        <div class="header-menu" id="headerMenu" role="menu" aria-label="Más opciones" hidden>
+          <button class="header-menu-item" id="exportBtn" type="button" role="menuitem">Exportar backup</button>
+          <button class="header-menu-item" id="importBtn" type="button" role="menuitem">Importar backup</button>
+        </div>
+      </div>
       <input type="file" id="importFileInput" accept="application/json,.json" hidden />
     </div>
   </div>
@@ -44,6 +68,15 @@
       </div>
       <div class="calendar-grid" id="calendarGrid"></div>
     </div>
+    <div class="calendar-legend" id="calendarLegend" role="group" aria-label="Leyenda: cada toque avanza el estado del día" hidden>
+      <span class="legend-item"><span class="legend-swatch legend-none" aria-hidden="true"></span>Sin registro</span>
+      <span aria-hidden="true">→</span>
+      <span class="legend-item"><span class="legend-swatch legend-completed" aria-hidden="true">✓</span>Completado</span>
+      <span aria-hidden="true">→</span>
+      <span class="legend-item"><span class="legend-swatch legend-skipped" aria-hidden="true">↷</span>Omitido (SKIP)</span>
+      <span aria-hidden="true">→</span>
+      <span class="legend-item">Sin registro</span>
+    </div>
     <div id="calendarQuantityEditor" class="quantity-editor" hidden></div>
   </div>
 
@@ -66,7 +99,7 @@
       </div>
 
       <div class="form-group">
-        <label>Tipo</label>
+        <label for="kindSelect">¿Cómo querés registrarlo?</label>
         <div class="kind-options" id="kindOptions"></div>
       </div>
 

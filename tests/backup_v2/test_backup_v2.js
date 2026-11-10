@@ -45,7 +45,7 @@ test('v1: un backup valido se importa y se normaliza a v2 (kind="boolean", quant
   const { sandbox } = loadApp();
   const r = sandbox.validateBackup(JSON.stringify(validV1Backup()));
   assert.equal(r.ok, true, 'warnings: ' + JSON.stringify(r.warnings) + ' fatal: ' + r.fatal);
-  assert.equal(r.data.schemaVersion, 2);
+  assert.equal(r.data.schemaVersion, 3);
   assert.equal(r.data.habits[0].kind, 'boolean');
   // outQuantities se construye con Object.create(null) (mismo patrón ya
   // usado por outCompletions): comparar contra "{}" por claves, no por
@@ -98,7 +98,7 @@ test('v2: un backup completo (boolean + quantitative) se importa correctamente',
   const { sandbox } = loadApp();
   const r = sandbox.validateBackup(JSON.stringify(validV2Backup()));
   assert.equal(r.ok, true, 'fatal: ' + r.fatal);
-  assert.equal(r.data.schemaVersion, 2);
+  assert.equal(r.data.schemaVersion, 3);
   const h2 = r.data.habits.find(h => h.id === 'h2');
   assert.equal(h2.kind, 'quantitative');
   assert.equal(h2.unit, 'minutes');
@@ -290,15 +290,15 @@ test('v2: campo faltante en el valor de cantidad (solo actualMinutes) es fatal',
 });
 
 // =======================================================================
-// Export: validateExportState() + buildBackupV2()
+// Export: validateExportState() + buildBackupV3()
 // =======================================================================
 
 test('export: dataset vacío sigue siendo válido', () => {
   const { sandbox } = loadApp({ habits: '[]', completions: '{}', quantities: '{}' });
   const validation = sandbox.validateExportState();
   assert.equal(validation.ok, true);
-  const built = sandbox.buildBackupV2();
-  assert.equal(built.schemaVersion, 2);
+  const built = sandbox.buildBackupV3();
+  assert.equal(built.schemaVersion, 3);
   assert.deepEqual(built.habits, []);
   assert.deepEqual(Object.keys(built.quantities), []);
 });
@@ -311,7 +311,7 @@ test('export: un hábito quantitative válido se exporta con kind/unit/target', 
   const { sandbox } = loadApp({ habits: JSON.stringify(habits), completions: '{}', quantities: JSON.stringify(quantities) });
   const validation = sandbox.validateExportState();
   assert.equal(validation.ok, true, validation.error);
-  const built = sandbox.buildBackupV2();
+  const built = sandbox.buildBackupV3();
   assert.equal(built.habits[0].kind, 'quantitative');
   assert.equal(built.quantities['2026-01-02'].h2.actualMinutes, 95);
 });
@@ -322,7 +322,7 @@ test('export: actualMinutes=0 persistido no se filtra (ausencia != cero)', () =>
   ];
   const quantities = { '2026-01-02': { h2: { actualMinutes: 0, plannedMinutes: null } } };
   const { sandbox } = loadApp({ habits: JSON.stringify(habits), completions: '{}', quantities: JSON.stringify(quantities) });
-  const built = sandbox.buildBackupV2();
+  const built = sandbox.buildBackupV3();
   assert.equal(built.quantities['2026-01-02'].h2.actualMinutes, 0);
 });
 
@@ -347,7 +347,7 @@ test('migración interna: un hábito v1 sin kind se normaliza a kind="boolean" a
   ];
   const { sandbox } = loadApp({ habits: JSON.stringify(habits), completions: '{}' });
   assert.equal(sandbox.validateExportState().ok, true);
-  const built = sandbox.buildBackupV2();
+  const built = sandbox.buildBackupV3();
   assert.equal(built.habits[0].kind, 'boolean');
 });
 

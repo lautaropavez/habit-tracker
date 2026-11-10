@@ -19,6 +19,8 @@ Stack: HTML, CSS, JavaScript vanilla y APIs web nativas. Sin frameworks, bundler
 
 ## 2. Estado técnico actual (verificado)
 
+> **Nota:** esta sección describe la base original (backup v1, dos claves de `localStorage`). Para el estado actual de datos (cuatro claves, Backup v3, archivados, SKIP y el ciclo del Calendario) ver la sección 6.
+
 - **Estructura.** `index.html` carga `css/styles.css` y `js/app.js` con rutas relativas. Un solo script sin módulos.
 - **Persistencia.** Solo `localStorage`, con dos claves: `habits` (array de hábitos) y `completions` (objeto `{ 'YYYY-MM-DD': { [habitId]: boolean } }`).
 - **Hábito.** Campos usados por la app: `id`, `name`, `icon`, `color`, `freq` (`daily` o `custom`), `freqCount`, `freqPeriod` (`week` o `month`) y `createdAt`. Los IDs se generan con `Date.now().toString()`. Hay 12 iconos y 10 colores predefinidos en `js/app.js`.
@@ -102,3 +104,76 @@ No son decisiones de producto abiertas; no se inventan aquí.
 
 - **5a:** enumeración exacta de `BACKUP_V1_ICONS`, congelada al preparar 5a a partir del conjunto aprobado entonces. Ajuste del scope documental de 5a a los documentos canónicos de Harness V2 (`PROJECT_CONTEXT`, `ROADMAP` y `WORKFLOW` cuando corresponda): la antigua lista de archivos permitidos, que incluía `HABIT_TRACKER_AUDIT.md`, pertenece a la gobernanza anterior a H2.
 - **5b:** detalle exacto de la estimación de capacidad y de la verificación estructural.
+
+## 6. Backup v3, SKIP, archivados y ciclo del Calendario (estado real)
+
+**Estado:** implementado y probado con datos sintéticos en el árbol de trabajo; **sin commit ni publicación** y **pendiente de prueba visual real** en navegador e iPhone (ver `ROADMAP.md`, P0). Las secciones 3 y 5 siguen vigentes para todo lo que no se contradice aquí; las reglas de estadísticas con SKIP, archivados y frecuencia heredada son adicionales y no cambian las de hábitos sin esos datos.
+
+### Contrato y compatibilidad
+
+- **Export:** la app exporta siempre `schemaVersion: 3`. **Import:** acepta v1, v2 y v3 y normaliza todo a la forma v3 (`archived: false`, `skips: {}`, y en v1 también `quantities: {}` y `kind: "boolean"`).
+- **Raíz v3**, exactamente: `schemaVersion`, `exportedAt`, `habits`, `completions`, `quantities`, `skips`. v1 y v2 rechazan los campos que no les corresponden (`skips`, `archived`, `freqWindowDays`, período `loop-month`).
+- **Hábito v3:** campos de v1 más `kind` (`boolean` o `quantitative`) y `archived` (booleano obligatorio). Un cuantitativo agrega `unit` (`"minutes"`) y `target` (`{ minutes }` o `null`). `quantities` conserva la regla de v2: la ausencia de entrada es distinta de `actualMinutes: 0`.
+- **Frecuencia heredada de Loop:** `freqPeriod: "loop-month"` con `freqWindowDays: 30` (el denominador original) y `freq: "custom"`; `freqCount` de 1 a 30. En Loop, N/30 no es una ventana fija de 30 días ni un mes calendario; el backup solo **preserva** la fracción. No se simula una ventana ni se convierte a mes calendario. `freqWindowDays` existe únicamente con este período.
+- **`skips`:** `{ "YYYY-MM-DD": { [habitId]: true } }`, solo para hábitos booleanos. Fechas reales y no futuras, sin huérfanos, solo valores `true`. **Nunca** coexiste con una completion `true` de la misma fecha y hábito (fatal al importar y al exportar).
+
+### Persistencia y recuperación
+
+- Cuatro claves de `localStorage`: `habits`, `completions`, `quantities`, `skips`. La salud (`missing`/`valid`/`corrupt`) se evalúa por clave; si cualquiera está corrupta rige el modo de solo lectura de la sección 2.
+- El reemplazo de importación escribe y verifica las cuatro claves con snapshot y marker previos, y ante un fallo restaura las cuatro. El snapshot usa `snapshotVersion: 3` con `skipsRaw`; un snapshot `snapshotVersion: 2` de la versión anterior sigue siendo recuperable (restaura `skips` como ausente); versión 1 y formas inválidas siguen yendo a recuperación bloqueante sin tocar los datos vivos.
+
+### SKIP, archivados y estadísticas
+
+- **SKIP es un estado neutral:** nunca cuenta como completado ni como incumplido, y no se crea ninguna completion a partir de él.
+- **Diario:** un día SKIP no forma período (no suma a la tasa y no corta ni extiende la racha). **Semanal/mensual:** un período con SKIP que no alcanzó el objetivo es neutral (ni cumplido ni fallido, no rompe la racha); si ya alcanzó el objetivo, se cumple. Si no queda ningún período puntuable por culpa de los neutrales, la tasa es "—". Un hábito sin SKIP calcula exactamente igual que antes.
+- **`loop-month`:** sin tasa ni rachas ("—"); se conservan el total y los días omitidos. Texto: "N de 30 (frecuencia original de Loop, no es mes calendario)".
+- **Archivados:** `archived` retira el hábito de **Hoy** sin borrar su historial. Calendario y Estadísticas lo listan al final con "(archivado)". Como el contrato no tiene `archivedAt`, tasa de éxito y rachas se muestran "—" y se conservan los totales históricos. Archivar y desarchivar desde la interfaz **no existe todavía**.
+- **Edición:** guardar un hábito conserva su `archived` y, si es `loop-month`, toda su frecuencia (el modal la muestra fija, de solo lectura).
+- **Vista previa de importación:** informa cantidad de archivados, de días SKIP (y fechas) y de hábitos con frecuencia heredada.
+
+### Ciclo del Calendario (hábitos booleanos)
+
+- Cada toque en una fecha editable avanza: **sin registro → completado → SKIP → sin registro**. "Sin registro" elimina completion y skip (no deja entradas `false`). Funciona también sobre días importados como SKIP o como completado.
+- **Fechas editables:** cualquier fecha real, pasada o actual; las futuras no cambian al tocarlas. Esto incluye los días anteriores a `createdAt`: se pueden registrar y corregir (con un tono propio y una etiqueta accesible que avisa que **no cuentan en las estadísticas**, porque ninguna estadística cuenta antes de `createdAt`); `createdAt` y el resto del hábito nunca se modifican. Los hábitos de tiempo ya abrían el editor en cualquier fecha no futura, y sus celdas ahora también se operan con teclado.
+- **Invariante:** nunca completion y skip a la vez. Un dato inconsistente se lee como completado y el siguiente paso lo deja solo en SKIP. Si la persistencia falla, el estado vuelve al anterior.
+- **Hoy** no cambia: el botón alterna completado y no completado; marcar completado un día SKIP reemplaza el SKIP.
+- **Cuantitativos:** no usan el ciclo; el Calendario sigue abriendo el editor de minutos.
+- **Accesibilidad:** cada celda editable es un botón (teclado con Enter o espacio) con etiqueta que dice el estado actual y qué hará el toque. Hay una leyenda breve con los tres estados, visible solo para hábitos booleanos.
+
+### Conversor Loop → Backup v3 (`tools/loop_habits_to_json.py`)
+
+- **Fechas:** `Repetitions.timestamp` es la medianoche UTC de una fecha de calendario, sin zona horaria (semántica de `LocalDate` en Loop); se convierte con aritmética de días, sin usar la zona local. Un timestamp que no sea múltiplo exacto de 86400000 ms se rechaza.
+- **Booleanos:** valores 1 y 2 → completion; 0 → sin registro (no se exporta); 3 (SKIP) → `skips`; −1 (UNKNOWN) → fatal. Un SKIP y otro valor el mismo día para el mismo hábito es un duplicado ambiguo y fatal. `createdAt` es la fecha del registro exportado más antiguo del hábito (completion, SKIP o cantidad); sin ningún registro, la fecha de conversión.
+- **Archivados** se exportan con `archived: true`; un flag distinto de 0/1 es fatal.
+- **Frecuencias:** 1/1, N/7 y N/30 (→ `loop-month`); cualquier otra es fatal.
+- **Cuantitativo:** única configuración admitida `unit` `hs`, `target_type` 0, frecuencia 1/7, valor almacenado ×1000 → minutos enteros (una conversión inexacta es fatal); `target: null`, `plannedMinutes: null`, ceros explícitos conservados, sin tope diario de 1440. Los valores especiales (−1 y 3) son fatales.
+- La conversión es todo o nada: ante cualquier problema no se escribe ningún archivo. La conversión real a Backup v3 se generó de forma privada (Gate B-7) y **no se importó**; los datos reales nunca entran a Git.
+
+### Cantidades de tiempo (entrada y presentación)
+
+- La única unidad de v3 es `minutes`; el dato persistido sigue siendo `actualMinutes` en minutos totales (sin campos nuevos, sin cambios en Backup v3 ni en el conversor).
+- Hoy y el editor del Calendario usan dos campos compactos **HH : MM** y un botón **Guardar** (o Enter). Se valida al guardar (`parseHoursMinutes`): hasta dos dígitos por campo, horas 0–24, minutos 0–59, y con 24 horas los minutos deben ser 00 (máximo 1440 minutos). Campo vacío, signos, decimales o más de dos dígitos son errores que se muestran solo cuando ocurren (sin texto permanente de límites); nada se trunca en silencio y un valor inválido no escribe. Guardar sin cambios no escribe. Los botones −5 / +5 min se mantienen.
+- Los minutos se muestran como `2 h 15 min` (`formatMinutesText`) y como `2h15` en espacios chicos (`formatMinutesCompact`). El objetivo del modal sigue ingresándose en minutos.
+- Un registro histórico de más de 24 h (el conversor no impone tope) se conserva y se muestra completo, pero para editarlo hay que dejarlo dentro de 00:00–24:00.
+
+### Temas visuales: Natural Linen y Noir Editorial
+
+- Dos temas con las mismas variables CSS y la misma estructura: **Natural Linen** (claro, por defecto) y **Noir Editorial** (oscuro: fondo `#0A0A0A`, superficies `#171717`, separadores `#34312E`, acentos piedra `#B5B0A5`, texto marfil `#F0EBE2`; sin brillos, gradientes ni sombras). Un botón luna/sol arriba a la derecha alterna entre ambos y dice qué tema activa. La preferencia se guarda en su propia clave de `localStorage` (`habitTracker.theme`), fuera de las cuatro claves de datos: no forma parte del backup v3 ni del snapshot de importación. Un script mínimo en `<head>` la aplica antes del primer render. No hay tema automático del sistema. Paleta clara como variables CSS en `css/styles.css`: lino `#F6F3EA` (fondo), marfil `#FFFEFA` (tarjetas), piedra `#E4E3D9` (separadores), salvia `#9BAB91`, verde `#788C70`, tinta `#292E26`. Por contraste WCAG se usan derivados: texto secundario `#5F695C` (el sugerido `#697366` da 4,46:1 sobre lino), `#4F6249` para texto y botones verdes (blanco sobre `#788C70` da solo 3,6:1) y bordes de control `#7F8A79`. `#788C70` queda para rellenos y trazos. Los pares de texto/fondo de ambos temas se verifican con WCAG en `tests/ux_time/test_theme.js`.
+- Sin fuentes externas (títulos y cifras con serif del sistema), sin gradientes y con sombras mínimas.
+- Completado, SKIP y minutos se pintan solo con clases (paleta fija, sin color inline por hábito); el color del hábito queda en el borde izquierdo de las tarjetas. SKIP se distingue por borde punteado y ↷, los días futuros por borde punteado fino y los anteriores a `createdAt` por fondo tierra. Columna de escritorio de 760 px (Calendario 520 px) y regla para ≤ 480 px.
+- `tests/ux_time/test_theme.js` verifica paleta y contrastes sobre el CSS; no sustituye la prueba visual en navegador.
+
+### Menú ⋮ del encabezado
+
+- Exportar e Importar backup viven en un menú ⋮ (junto al botón de tema); ya no hay botones visibles en el encabezado. Solo cambió dónde están: ejecutan las mismas funciones, con la misma validación, vista previa, reemplazo atómico y rollback. Se opera con mouse, teclado (flechas, Inicio, Fin, Escape, Tab) y táctil; se cierra con Escape, al elegir una opción y al tocar fuera. −5 min y +5 min van juntos, uno al lado del otro.
+
+### Formulario de hábitos y gráfico de 30 días
+
+- El formulario pregunta «¿Cómo querés registrarlo?» con un desplegable: **Marcar como completado** (tipo interno `boolean`) y **Registrar tiempo** (tipo interno `quantitative`, unidad `minutes`), con una ayuda breve que cambia según la opción. Los términos técnicos no se muestran. Al editar, la opción se ve deshabilitada (el tipo no se cambia). No hay unidades nuevas ni cambios de esquema o backup.
+- Estadísticas muestra «Últimos 30 días» (hoy y los 29 anteriores, en orden cronológico, para hábitos de ambos tipos) en lugar del gráfico de 7 días. Mismo criterio diario que antes: completado / SKIP / sin registro (o minutos registrados); no infiere períodos, así que frecuencias semanales, `loop-month` y archivados muestran solo el dato diario y sus métricas no cambian. Un día sin registro anterior a `createdAt` se marca aparte (línea punteada); un registro anterior a `createdAt` nunca se oculta. Eje con 5 fechas (`Hoy` al final), descripción accesible del conjunto y detalle por día en el tooltip. Las barras se reparten el ancho disponible (sin scroll horizontal).
+
+### Limitaciones conocidas
+
+- Sin `archivedAt` y sin interfaz para archivar o desarchivar.
+- Un 0 booleano de Loop no se distingue de un día sin registro después de importar.
+- Sin tests de render en navegador real: los tests de interfaz usan un DOM falso.

@@ -13,9 +13,10 @@ Secuencia, estado, dependencias y criterios generales de salida. Las decisiones 
 | H2: Harness V2 (documentación y gobernanza) | En curso. Falta incorporar los cambios manuales en `.claude/**` y la revisión documental |
 | 5a | Completa y publicada |
 | 5b | Completa y publicada |
-| Conversor Loop → backup JSON v1 | Pendiente (depende de 5b) |
-| Backup v2 (contrato cuantitativo) | Propuesto, no secuenciado. Contrato documentado y tests sintéticos preparados; sin implementar |
-| Importar datos reales de Loop | Pendiente (Gate B) |
+| Conversor Loop → backup JSON v1 | Evolucionó a v2/v3 (ver filas siguientes). Conversión real de BACKUP_B a Backup v3 generada y validada (Gate B-7); el JSON es privado (`/.loop-private/`) y no se importó |
+| Backup v2 (contrato cuantitativo) | Implementado y en `main` (`e80742e`, `f81bb66`). La sección "Backup v2" más abajo es el contrato original; su texto "sin implementar" es histórico |
+| Backup v3 (`archived`, `skips`, frecuencia heredada `loop-month`) | Implementado en el árbol de trabajo, sin commit (incluye el ciclo manual de SKIP en el Calendario). Pendiente: revisión, prueba visual en navegador y consolidar en Git (ver "Pendientes por prioridad") |
+| Importar datos reales de Loop | Pendiente: requiere publicar Backup v3, respaldo preventivo y Gate B de importación (ver P0) |
 | IndexedDB, PWA y backups adicionales | Sin prioridad inmediata |
 | Analytics & Charts | Futuro / no iniciado, posterior a PWA |
 | `README.md` | Trabajo posterior, fuera de H2 |
@@ -26,6 +27,55 @@ Secuencia, estado, dependencias y criterios generales de salida. Las decisiones 
 ## Orden
 
 H2 → 5a → 5b → conversor Loop → Gate B para datos reales → después, IndexedDB, PWA y backups adicionales → Analytics & Charts (posterior a PWA).
+
+## Pendientes por prioridad
+
+Checklist viva. Un ítem solo se marca como hecho cuando está verificado de verdad (los que dependen de pruebas reales en navegador o iPhone quedan abiertos hasta entonces). Los ítems de P1 detallan trabajo ya listado en `Future Product Backlog` (ítems 2, 3 y 4); no lo reemplazan.
+
+### P0 — Finalizar migración de Loop
+
+- [ ] Revisar los cambios pendientes de Backup v3 y consolidarlos en Git.
+- [ ] Probar la importación local en navegador, incluyendo Hoy, Calendario, Estadísticas, archivados y SKIP.
+- [ ] Publicar Backup v3 en GitHub Pages.
+- [ ] Verificar que el iPhone ejecuta la versión actualizada.
+- [ ] Importar los 17 hábitos de Loop, después de exportar un respaldo preventivo.
+- [ ] Verificar los 11 hábitos activos, 6 archivados, 8.596 completados, 389 SKIP y 1.039 mediciones cuantitativas.
+
+**Contexto:** Gate B-7 aprobado: el JSON privado de Backup v3 ya fue generado y validado con el `validateBackup()` real. No hay hábitos nuevos en Habit Tracker; el objetivo es reemplazarlos por el historial de Loop. El JSON y los `.db` siguen privados (`/.loop-private/`, ignorados por Git).
+
+**Observaciones de la revisión previa a consolidar:**
+
+- *Resuelto en el árbol de trabajo (falta verlo en navegador):* las estadísticas de un hábito archivado ya no decaen; sin `archivedAt`, tasa y rachas se muestran "—" y se conservan los totales.
+- *Definido por decisión de producto (falta verlo en navegador):* el Calendario usa un ciclo sin registro → completado → SKIP → sin registro. Un toque sobre un día SKIP lo deja sin registro sin pedir confirmación; el ciclo hace que el estado sea predecible y la leyenda lo explica.
+- *Resuelto:* `PROJECT_CONTEXT.md` documenta Backup v3 en su sección 6. La sección "Backup v2" de este documento se mantiene como contrato original histórico.
+- *Abierto:* no existe `archivedAt` ni interfaz para archivar o desarchivar hábitos.
+
+### P1 — Completar historial de estudio
+
+- [x] Incorporar una opción para marcar y quitar SKIP manualmente, por ejemplo en días de enfermedad o vacaciones. *Implementada* como ciclo de tres estados en el Calendario (sin registro → completado → SKIP → sin registro, con leyenda y etiquetas accesibles; contrato en `PROJECT_CONTEXT.md`, sección 6). **Pendiente: prueba visual real en navegador e iPhone** (se verifica dentro del segundo ítem de P0); el cambio sigue sin commit.
+- [ ] Diseñar un importador de horas de estudio desde un archivo Markdown (`.md`) con registros diarios.
+- [ ] Convertir las horas registradas a minutos, conservando las fechas originales.
+- [ ] Mostrar una vista previa y detectar fechas ya presentes en Loop, sin sobrescribirlas silenciosamente.
+- [ ] Importar únicamente los registros confirmados y verificar los totales.
+- [ ] Permitir consultar y corregir los registros históricos desde la interfaz.
+
+**Contexto:** hay aproximadamente un año adicional de horas de estudio anotadas día por día en un archivo Markdown. Todavía no se accede a ese archivo (requiere autorización explícita, como cualquier dato personal). Detalle del caso en `Future Product Backlog`, ítem 3 ("Histórico manual").
+
+- [x] Rediseño visual **Natural Linen** (tema claro único), tarjetas y Estadísticas compactas, símbolos grandes en el Calendario y entrada de tiempo **HH : MM** (máx. 24:00) en hábitos cuantitativos. *Implementado* en el árbol de trabajo, sin commit. **Pendiente: verificación visual real** en navegador (escritorio e iPhone), dentro de la prueba visual de P0. Ajustes posteriores aprobados: selector «¿Cómo querés registrarlo?» (Marcar como completado / Registrar tiempo) en el formulario y gráfico de **Últimos 30 días** en Estadísticas; también sin commit y con verificación visual pendiente. Luego se agregó el tema oscuro **Noir Editorial** con selector luna/sol (preferencia guardada fuera del backup), el menú ⋮ del encabezado y el registro en cualquier fecha pasada del Calendario; **verificación visual pendiente en ambos temas**.
+
+### P2 — Mejoras de interfaz y experiencia de usuario
+
+Prioridad inferior a P0 (migración de Loop) y P1 (historial de estudio): no debe adelantarse a ellas. Solo se registra la idea; no está implementada ni diseñada en detalle, y no crea funcionalidades nuevas más allá de reubicar las existentes.
+
+- [x] Incorporar un menú de tres puntos (⋮) en el encabezado, adaptado a computadora y iPhone.
+- [x] Mover las funciones existentes de "Exportar backup" e "Importar backup" a ese menú, quitando sus botones visibles de la pantalla principal.
+- [x] Mantener intactas las validaciones, confirmaciones y mecanismos de seguridad de importación y exportación.
+- [ ] Diseñar el menú para incorporar futuras funcionalidades sin modificar constantemente el encabezado.
+- [ ] Evaluar opciones futuras como Configuración, administrar hábitos archivados (ver `Future Product Backlog`, ítem 4), ayuda e información de la aplicación.
+- [x] Incorporar accesibilidad: navegación por teclado, etiquetas descriptivas y cierre al tocar fuera del menú.
+- [ ] Probar el menú visual y funcionalmente en dispositivos móviles y computadora. *(El menú ⋮ ya está implementado con tests automáticos; falta esta prueba real.)*
+
+**Alcance:** reubicar exportar e importar no modifica su comportamiento ni sus garantías (validación estricta, preview, reemplazo atómico, rollback). Cualquier opción adicional del menú se evalúa por separado.
 
 ## 5a. Hardening de render + export JSON
 
@@ -131,16 +181,19 @@ Los candidatos listados arriba no son SPEC congelada.
 Este bloque no es una secuencia comprometida ni una SPEC. Son candidatos aprobados conceptualmente para evaluar después de tener el producto base terminado y experiencia real de uso. No se fija todavía implementación, arquitectura ni orden definitivo interno.
 
 1. **Notas/contexto por hábito y fecha.** Permitir asociar una nota breve a una entrada (ejemplos: viaje, enfermedad, entrenamiento liviano, contexto excepcional), preservando potencial analítico futuro.
-2. **Skip / pausa justificada.** Distinguir conceptualmente entre completado, incumplido y omitido, contemplando vacaciones, enfermedad, lesión u otras excepciones. Un skip no debe convertirse automáticamente en un éxito; el impacto exacto sobre estadísticas y rachas se define antes de implementar.
+2. **Skip / pausa justificada.** Distinguir conceptualmente entre completado, incumplido y omitido, contemplando vacaciones, enfermedad, lesión u otras excepciones. Un skip no debe convertirse automáticamente en un éxito; el impacto exacto sobre estadísticas y rachas se define antes de implementar. *Nota:* el almacenamiento y la visualización de SKIP (Backup v3) ya están implementados en el árbol de trabajo, con SKIP neutral en rachas y tasas; marcar y quitar SKIP manualmente ya está implementado como ciclo del Calendario, pendiente de prueba visual real (ver P1).
 3. **Hábitos cuantitativos.** Además de hábitos binarios, evaluar objetivos medibles (páginas, minutos, pasos, litros, sesiones); unidades, metas y relación con frecuencias quedan por definir. Ver la propuesta de contrato detallada en "Backup v2", más arriba.
    - **Caso prioritario inicial: Estudio / duración.** Unidad canónica interna: minutos enteros. La UI debe permitir ingresar horas y minutos, convirtiendo automáticamente a minutos totales al guardar y de minutos totales a horas+minutos al mostrar (ej.: 2 h 35 min → 155 min almacenados; 90 min → mostrar 1 h 30 min; 185 min → mostrar 3 h 5 min; 240 min → mostrar 4 h). Evitar horas y minutos como dos fuentes de verdad independientes.
    - **Histórico manual.** Existen registros históricos reales de estudio con duración real y, en algunos casos, duración planificada/estimada (ejemplo: 2025-10-01 real 1h35min / planificado 4h). El usuario no quiere cargarlos día por día: se planifica una futura importación batch. Como mínimo preservar `actualMinutes`; cuando exista dato planificado y el modelo final lo permita razonablemente, preservar también `plannedMinutes` (ejemplo conceptual: `{actualMinutes: 95, plannedMinutes: 240}`). El schema definitivo (Backup v2 o equivalente) no está definido todavía; Backup v1 no se modifica por esta decisión.
    - **Relación con Gate B / Loop.** El usuario cree, sin confirmar, que su base real de Loop puede registrar Estudio de forma cuantitativa (horas/cantidad) en vez de binaria. Antes de migrar la base real de Loop, Gate B debe verificar específicamente para hábitos cuantitativos: cómo los identifica Loop, valor almacenado, unidad real, precisión, codificación, significado del valor, comportamiento de timestamps/fechas y cualquier metadata necesaria. No asumir que Loop almacena horas. No convertir un valor cuantitativo a boolean true/false perdiendo información (el Conversor Loop → backup JSON v1 ya trata hoy los hábitos cuantitativos como UNSUPPORTED y aborta identificándolos, en vez de convertirlos silenciosamente). Si Gate B confirma historial cuantitativo relevante, el soporte de hábitos cuantitativos debe implementarse antes de la migración histórica definitiva de esos hábitos.
-4. **Archivado de hábitos.** Retirar hábitos de la experiencia diaria sin destruir su historial, preservando estadísticas y análisis históricos. Archivar se diferencia claramente de eliminar.
+4. **Archivado de hábitos.** Retirar hábitos de la experiencia diaria sin destruir su historial, preservando estadísticas y análisis históricos. Archivar se diferencia claramente de eliminar. *Nota:* el campo `archived` y el ocultamiento en Hoy (Backup v3) ya están implementados en el árbol de trabajo; archivar y desarchivar desde la interfaz sigue pendiente.
 5. **Widgets / acceso ultrarrápido.** Investigar capacidades reales de iOS/PWA antes de comprometer una solución. Objetivo de producto: minimizar pasos para consultar o marcar un hábito. No prometer widget nativo hasta verificar soporte técnico real.
 6. **Recordatorios y habit stacking.** Si se implementa, comenzar por recordatorios simples. Evaluar después relaciones del tipo "después de completar X → recordar Y", evitando inicialmente automatizaciones complejas o dependencias innecesarias.
 7. **Organización por áreas o momentos.** Permitir eventualmente organizar hábitos (por ejemplo mañana/día/noche, o salud/estudio/personal). Tiene valor conocido para el usuario por experiencia previa con una organización similar en Loop Habit Tracker en Android; el modelo exacto se define solo después de importar y observar el dataset real.
 8. **Year in Review.** Resumen anual personal. Candidatos: hábitos más consistentes, completados totales, mejor mes, racha récord, heatmap anual, comparación con períodos o años anteriores cuando sea válida. Se diseña como resumen útil y visual, no como gamificación obligatoria.
+
+9. **Estadísticas avanzadas (fase futura).** Evolución mensual y anual, comparaciones entre períodos, tendencias y consistencia histórica. Hoy solo existe el gráfico de los últimos 30 días; nada de esto está implementado ni definido en detalle (las métricas por período deben respetar SKIP, archivados y la frecuencia heredada de Loop).
+10. **Nuevas unidades de medición (fase futura).** Más allá de minutos (páginas, repeticiones, etc.). Requiere definir antes su modelo de datos y su contrato de backup; no se agrega ninguna unidad todavía.
 
 **Principios del backlog futuro:** local-first y privacidad por defecto; no agregar backend/cloud solamente para soportar estas ideas; simplicidad antes que feature count; no introducir red social, rankings ni gamificación compleja sin una razón futura concreta; evaluar cada candidato según uso real; las features pueden descartarse si no aportan suficiente valor; no permitir que este backlog retrase 5a, 5b, Loop, UX/UI V2 ni PWA; cualquier cambio de modelo de datos se diseña explícitamente antes de implementación; preservar compatibilidad/migración de datos existentes cuando corresponda.
 

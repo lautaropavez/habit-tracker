@@ -239,7 +239,7 @@ test('export: un hábito cuantitativo con minutos registrados vía incrementQuan
 
   const validation = sandbox.validateExportState();
   assert.equal(validation.ok, true, validation.error);
-  const built = sandbox.buildBackupV2();
+  const built = sandbox.buildBackupV3();
   assert.equal(built.quantities[PAST_DATE].h1.actualMinutes, 10);
   assert.equal(built.habits[0].kind, 'quantitative');
   assert.equal(built.habits[0].target.minutes, 60);
@@ -251,7 +251,7 @@ test('import: un backup v2 con minutos registrados a través de la UI se reimpor
   sandbox.setQuantityExact('h1', PAST_DATE_2, 42);
   sandbox.toggleHabit('h2', PAST_DATE);
 
-  const built = sandbox.buildBackupV2();
+  const built = sandbox.buildBackupV3();
   const result = sandbox.validateBackup(JSON.stringify(built));
   assert.equal(result.ok, true, result.fatal);
   assert.equal(result.data.quantities[PAST_DATE].h1.actualMinutes, 5);

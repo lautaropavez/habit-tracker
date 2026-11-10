@@ -1,3 +1,60 @@
+/* Dos temas con las mismas variables: Natural Linen (claro, por defecto en
+   :root) y Noir Editorial (oscuro, [data-theme="dark"] más abajo). La
+   estructura no cambia entre temas; solo cambian los valores.
+
+   Natural Linen. Paleta de referencia: lino #F6F3EA, marfil #FFFEFA, piedra #E4E3D9,
+   salvia #9BAB91, verde #788C70, tinta #292E26.
+   Ajustes por contraste (WCAG, medidos contra #F6F3EA / #FFFEFA):
+   - texto secundario #5F695C (5.2:1 / 5.7:1) en vez de #697366 (4.5:1 / 4.9:1);
+   - #788C70 solo para rellenos y trazos (3.3-3.6:1, componentes gráficos);
+     el texto sobre botones y los íconos usan #4F6249 (6.0-6.6:1);
+   - bordes de controles #7F8A79 (>= 3:1) además del borde fino #E4E3D9. */
+:root {
+  --linen: #F6F3EA;
+  --ivory: #FFFEFA;
+  --stone: #E4E3D9;
+  --sage: #9BAB91;
+  --green: #788C70;
+  --green-deep: #4F6249;
+  --sage-soft: #DCE4D5;
+  --sage-faint: #EEF1E8;
+  --ink: #292E26;
+  --text-2: #5F695C;
+  --text-3: #7F8979;
+  --control-border: #7F8A79;
+  --locked-bg: #ECEADF;
+  --danger: #9A3B32;
+  --danger-border: #D9C4BF;
+  --overlay: rgba(41, 46, 38, 0.5);
+  --shadow-soft: 0 1px 4px rgba(41, 46, 38, 0.2);
+  --serif: Georgia, 'Times New Roman', serif;
+  color-scheme: light;
+}
+
+/* Noir Editorial: negro tinta, superficies grafito, separadores cálidos y
+   acentos piedra sobre texto marfil. Sin brillos, gradientes ni sombras.
+   Los pares de texto/fondo se verifican con WCAG en tests/ux_time/test_theme.js. */
+:root[data-theme="dark"] {
+  --linen: #0A0A0A;
+  --ivory: #171717;
+  --stone: #34312E;
+  --sage: #6F6B64;
+  --green: #B5B0A5;
+  --green-deep: #D8D2C6;
+  --sage-soft: #2A2825;
+  --sage-faint: #201F1D;
+  --ink: #F0EBE2;
+  --text-2: #B0AAA0;
+  --text-3: #8E897F;
+  --control-border: #8A857B;
+  --locked-bg: #1E1C1A;
+  --danger: #E08A7E;
+  --danger-border: #5A3B36;
+  --overlay: rgba(0, 0, 0, 0.7);
+  --shadow-soft: none;
+  color-scheme: dark;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -6,15 +63,28 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #1a1a1a;
-  color: #e0e0e0;
+  background: var(--linen);
+  color: var(--ink);
   padding: 20px;
-  padding-bottom: 80px;
+  padding-bottom: 88px;
+  /* Escritorio: columna legible en vez de paneles a todo el ancho. */
+  max-width: 760px;
+  margin: 0 auto;
+  line-height: 1.35;
+}
+
+/* Foco visible para teclado en todo control interactivo. */
+:focus-visible {
+  outline: 2px solid var(--green-deep);
+  outline-offset: 2px;
 }
 
 h1 {
-  font-size: 24px;
-  margin-bottom: 20px;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  margin-bottom: 16px;
   text-align: center;
 }
 
@@ -24,7 +94,7 @@ h1 {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .header-row h1 {
@@ -33,50 +103,134 @@ h1 {
 
 .header-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
 }
 
-.btn-export {
-  flex-shrink: 0;
+/* Botones discretos del encabezado: tema (luna / sol) y menú ⋮. */
+.icon-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   min-height: 44px;
   min-width: 44px;
   padding: 6px 10px;
-  background: #3a3a3a;
-  color: #ccc;
-  border: none;
-  border-radius: 6px;
-  font-size: 12px;
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
 }
 
+.icon-action:hover {
+  background: var(--ivory);
+  border-color: var(--stone);
+  color: var(--ink);
+}
+
+/* El botón de tema muestra el ícono del tema que activa. */
+.theme-icon-sun,
+:root[data-theme="dark"] .theme-icon-moon {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-icon-sun {
+  display: inline;
+}
+
+.header-menu-wrap {
+  position: relative;
+}
+
+.header-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 200;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--ivory);
+  border: 1px solid var(--control-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-soft);
+}
+
+.header-menu[hidden] {
+  display: none;
+}
+
+.header-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.header-menu-item:hover {
+  background: var(--sage-faint);
+  border-color: var(--stone);
+}
+
+.btn-link,
+.calendar-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 6px 12px;
+  background: var(--ivory);
+  color: var(--ink);
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .tabs {
   display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-  background: #2a2a2a;
+  gap: 4px;
+  margin-bottom: 16px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
   padding: 4px;
   border-radius: 10px;
 }
 
 .tab {
   flex: 1;
-  padding: 10px;
+  min-height: 40px;
+  padding: 8px;
   background: transparent;
-  border: none;
-  color: #888;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  border-radius: 7px;
   cursor: pointer;
   font-size: 14px;
 }
 
 .tab.active {
-  background: #3a3a3a;
-  color: #fff;
+  background: var(--sage-soft);
+  border-color: var(--sage);
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .view {
@@ -87,24 +241,26 @@ h1 {
   display: block;
 }
 
+/* ---------- Hoy ---------- */
 .habit-card {
-  background: #2a2a2a;
-  padding: 15px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  border-left: 4px solid var(--sage);
+  padding: 12px 14px;
   border-radius: 10px;
-  margin-bottom: 12px;
-  border-left: 4px solid;
+  margin-bottom: 10px;
 }
 
 .habit-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 
 .habit-icon {
-  font-size: 28px;
+  font-size: 24px;
 }
 
 .habit-info {
@@ -113,7 +269,7 @@ h1 {
 }
 
 .habit-name {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -125,90 +281,104 @@ h1 {
 }
 
 .habit-name-link:focus-visible {
-  outline: 2px solid #4CAF50;
-  outline-offset: 2px;
   border-radius: 4px;
 }
 
 .habit-freq {
   font-size: 12px;
-  color: #888;
+  color: var(--text-2);
   margin-top: 2px;
 }
 
 .btn {
+  min-height: 44px;
+  min-width: 44px;
   padding: 8px 12px;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid var(--stone);
+  background: var(--ivory);
+  color: var(--ink);
+  border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
 }
 
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Hoy, check: círculo vacío -> relleno salvia con ✓ (símbolo + color). */
 .btn-check {
-  background: #666;
-  color: white;
+  border: 1.5px solid var(--control-border);
+  color: var(--text-2);
+  border-radius: 50%;
+  font-size: 18px;
 }
 
 .btn-check.completed {
-  background: #4CAF50;
+  background: var(--sage-soft);
+  border-color: var(--green);
+  color: var(--green-deep);
+  font-weight: 700;
 }
 
 .btn-edit {
-  background: #3a3a3a;
-  color: white;
+  color: var(--ink);
 }
 
 .btn-delete {
-  background: #ff4444;
-  color: white;
+  border-color: var(--danger-border);
+  color: var(--danger);
 }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
   font-size: 12px;
-  color: #888;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .stat {
-  background: #1a1a1a;
-  padding: 8px;
-  border-radius: 6px;
+  background: var(--linen);
+  padding: 6px 4px;
+  border-radius: 8px;
   text-align: center;
 }
 
 .stat-label {
   font-size: 10px;
-  color: #666;
+  color: var(--text-2);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 4px;
+  letter-spacing: 0.4px;
+  margin-bottom: 2px;
 }
 
 .stat-value {
-  color: #4CAF50;
-  font-weight: 700;
-  font-size: 16px;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 17px;
 }
 
 .add-btn {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  width: 60px;
-  height: 60px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
-  background: #4CAF50;
+  background: var(--green-deep);
   border: none;
-  color: white;
-  font-size: 30px;
+  color: var(--ivory);
+  font-size: 28px;
+  line-height: 1;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-soft);
   z-index: 100;
 }
 
+/* ---------- Modal y formularios ---------- */
 .modal {
   display: none;
   position: fixed;
@@ -216,7 +386,7 @@ h1 {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.9);
+  background: var(--overlay);
   align-items: center;
   justify-content: center;
   padding: 20px;
@@ -229,7 +399,8 @@ h1 {
 }
 
 .modal-content {
-  background: #2a2a2a;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
   padding: 20px;
   border-radius: 12px;
   width: 100%;
@@ -239,18 +410,19 @@ h1 {
 }
 
 .modal-title {
+  font-family: var(--serif);
   font-size: 20px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   font-weight: 600;
 }
 
 .form-group {
-  margin-bottom: 15px;
+  margin-bottom: 14px;
 }
 
 label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-size: 14px;
 }
 
@@ -258,10 +430,10 @@ input,
 select {
   width: 100%;
   padding: 10px;
-  background: #1a1a1a;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
-  color: #e0e0e0;
+  background: var(--ivory);
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  color: var(--ink);
   font-size: 16px;
 }
 
@@ -272,16 +444,18 @@ select {
 }
 
 .icon-btn {
-  padding: 10px;
-  background: #1a1a1a;
-  border: 2px solid transparent;
-  border-radius: 6px;
-  font-size: 24px;
+  min-height: 44px;
+  padding: 8px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  border-radius: 8px;
+  font-size: 22px;
   cursor: pointer;
 }
 
 .icon-btn.selected {
-  border-color: #4CAF50;
+  border: 2px solid var(--green-deep);
+  background: var(--sage-faint);
 }
 
 .color-grid {
@@ -293,30 +467,31 @@ select {
 .color-btn {
   height: 40px;
   border: 3px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
 .color-btn.selected {
-  border-color: white;
+  border-color: var(--ink);
 }
 
 .freq-options {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .freq-option {
   padding: 12px;
-  background: #1a1a1a;
-  border: 2px solid transparent;
-  border-radius: 6px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  border-radius: 8px;
   cursor: pointer;
 }
 
 .freq-option.selected {
-  border-color: #4CAF50;
+  border: 2px solid var(--green-deep);
+  background: var(--sage-faint);
 }
 
 .freq-details {
@@ -333,100 +508,77 @@ select {
   min-width: 70px;
 }
 
-.kind-options {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+.kind-select {
+  min-height: 44px;
 }
 
-.kind-option {
-  flex: 1;
-  min-width: 120px;
-  padding: 12px;
-  background: #1a1a1a;
-  border: 2px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
+.kind-select:disabled {
+  background: var(--locked-bg);
+  color: var(--text-2);
 }
 
-.kind-option.selected {
-  border-color: #4CAF50;
-}
-
-.kind-option.kind-readonly {
-  cursor: default;
-  flex: none;
-  width: 100%;
-}
-
-.kind-desc {
-  font-size: 11px;
-  color: #888;
-  margin-top: 4px;
-}
-
+.kind-help,
 .kind-readonly-note {
-  font-size: 11px;
-  color: #888;
+  font-size: 12px;
+  color: var(--text-2);
   margin-top: 6px;
 }
 
 .modal-actions {
   display: flex;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 18px;
 }
 
 .btn-primary,
 .btn-secondary {
   flex: 1;
+  min-height: 44px;
   padding: 12px;
-  border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 16px;
   cursor: pointer;
   font-weight: 600;
 }
 
 .btn-primary {
-  background: #4CAF50;
-  color: white;
+  background: var(--green-deep);
+  border: 1px solid var(--green-deep);
+  color: var(--ivory);
 }
 
 .btn-secondary {
-  background: #3a3a3a;
-  color: white;
+  background: var(--ivory);
+  border: 1px solid var(--control-border);
+  color: var(--ink);
 }
 
 .empty-state {
   text-align: center;
-  color: #888;
-  margin-top: 50px;
+  color: var(--text-2);
+  margin-top: 40px;
 }
 
+/* ---------- Calendario ---------- */
 .calendar {
-  background: #2a2a2a;
-  padding: 15px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  padding: 14px;
   border-radius: 10px;
+  max-width: 520px;
+  margin: 0 auto;
 }
 
 .calendar-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 15px;
-}
-
-.calendar-nav {
-  background: #3a3a3a;
-  border: none;
-  color: white;
-  padding: 8px 12px;
-  border-radius: 6px;
-  cursor: pointer;
+  margin-bottom: 12px;
 }
 
 .calendar-month {
+  font-family: var(--serif);
+  font-size: 17px;
   font-weight: 600;
 }
 
@@ -439,47 +591,170 @@ select {
 .calendar-day-header {
   text-align: center;
   font-size: 11px;
-  color: #888;
-  padding: 8px 0;
+  color: var(--text-2);
+  padding: 6px 0;
   font-weight: 600;
 }
 
+.calendar-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-2);
+  padding: 20px;
+}
+
+/* Día sin registro: neutro, bien delimitado. */
 .calendar-day {
   aspect-ratio: 1;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #1a1a1a;
-  border-radius: 6px;
-  font-size: 13px;
+  background: var(--linen);
+  border: 1px solid var(--stone);
+  color: var(--ink);
+  border-radius: 8px;
+  font-size: 14px;
   cursor: pointer;
   position: relative;
 }
 
 .calendar-day.other-month {
-  color: #555;
+  color: var(--text-3);
 }
 
 .calendar-day.today {
-  border: 2px solid #4CAF50;
+  border: 2px solid var(--green-deep);
+  font-weight: 700;
 }
 
+/* Futuro: se ve apagado y no editable. */
 .calendar-day.future {
-  opacity: 0.3;
-  cursor: not-allowed;
+  background: transparent;
+  border-style: dotted;
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* Anterior a la creación del hábito: editable, con fondo tierra (no cuenta
+   en las estadísticas), sin tono de error. Un estado con marca (completado,
+   SKIP, minutos) conserva su propio fondo. */
+.calendar-day.before-created {
+  background: var(--locked-bg);
+  color: var(--text-2);
+}
+
+/* Con marca (completado, SKIP, minutos): el número pasa a la esquina y el
+   símbolo ocupa el centro, grande. */
+.calendar-day.completed .calendar-day-num,
+.calendar-day.skipped .calendar-day-num,
+.calendar-day.quantity-met .calendar-day-num,
+.calendar-day.quantity-partial .calendar-day-num {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .calendar-day-check {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-size: 9px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 8px;
+  font-size: 26px;
   line-height: 1;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* Cantidad de tiempo: texto corto ("2h15"), más chico que ✓ / ↷. */
+.calendar-day-check.calendar-day-qty {
+  font-size: 13px;
+}
+
+.calendar-day.completed,
+.calendar-day.quantity-met {
+  background: var(--sage-soft);
+  border-color: var(--green);
+}
+
+.calendar-day.quantity-partial {
+  background: var(--sage-faint);
+  border-color: var(--sage);
+}
+
+.calendar-day.completed .calendar-day-check,
+.calendar-day.quantity-met .calendar-day-check,
+.calendar-day.quantity-partial .calendar-day-check {
+  color: var(--green-deep);
+}
+
+/* SKIP: borde punteado grueso + símbolo ↷ (no depende solo del color). */
+.calendar-day.skipped {
+  background: var(--ivory);
+  border: 2px dashed var(--text-3);
+}
+
+.calendar-day.skipped .calendar-day-check {
+  color: var(--text-2);
+}
+
+.calendar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 8px;
+  margin: 10px auto 0;
+  max-width: 520px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.calendar-legend[hidden] {
+  display: none;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 12px;
   font-weight: 700;
 }
 
+.legend-none {
+  background: var(--linen);
+  border: 1px solid var(--stone);
+}
+
+.legend-completed {
+  background: var(--sage-soft);
+  border: 1px solid var(--green);
+  color: var(--green-deep);
+}
+
+.legend-skipped {
+  background: var(--ivory);
+  border: 2px dashed var(--text-3);
+  color: var(--text-2);
+}
+
 .habit-selector {
-  margin-bottom: 15px;
+  margin-bottom: 14px;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -489,102 +764,92 @@ select {
 .habit-selector select {
   flex: 1;
   min-width: 150px;
-}
-
-.btn-link {
-  flex-shrink: 0;
   min-height: 44px;
-  padding: 8px 14px;
-  background: #3a3a3a;
-  color: #ccc;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  white-space: nowrap;
 }
 
-.btn-link:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-link:focus-visible {
-  outline: 2px solid #4CAF50;
-  outline-offset: 2px;
-}
-
+/* ---------- Estadísticas ---------- */
 .stats-card {
-  background: #2a2a2a;
-  padding: 16px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  border-left: 4px solid var(--sage);
+  padding: 14px;
   border-radius: 10px;
-  margin-bottom: 15px;
-  border-left: 4px solid;
+  margin-bottom: 12px;
 }
 
 .stats-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .stats-title {
   flex: 1;
-  font-size: 18px;
+  font-family: var(--serif);
+  font-size: 17px;
   font-weight: 600;
 }
 
 .stats-numbers {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .stat-box {
-  background: #1a1a1a;
-  padding: 12px;
-  border-radius: 6px;
+  background: var(--linen);
+  border: 1px solid var(--stone);
+  padding: 8px 6px;
+  border-radius: 8px;
   text-align: center;
 }
 
 .stat-box-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: #4CAF50;
-  margin-bottom: 4px;
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 2px;
 }
 
 .stat-box-label {
-  font-size: 11px;
-  color: #888;
+  font-size: 10px;
+  color: var(--text-2);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
+}
+
+.stats-note {
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 6px 0 10px;
 }
 
 .chart {
-  margin-top: 16px;
+  margin-top: 10px;
 }
 
 .chart-title {
-  font-size: 12px;
-  color: #888;
-  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 8px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
 }
 
 .chart-bars {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  height: 80px;
-  gap: 3px;
+  justify-content: center;
+  height: 84px;
+  gap: 8px;
 }
 
 .chart-bar-wrapper {
   flex: 1;
+  max-width: 44px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -592,81 +857,210 @@ select {
   height: 100%;
 }
 
+.chart-bar-track {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--stone);
+}
+
+.chart-value {
+  font-size: 10px;
+  min-height: 12px;
+  line-height: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 .chart-bar {
   width: 100%;
+  background: var(--green);
   border-radius: 3px 3px 0 0;
   min-height: 2px;
-  transition: all 0.3s;
+}
+
+/* SKIP en el gráfico: barra baja punteada y marca ↷ en el rótulo. */
+.chart-bar.chart-bar-skipped {
+  background: transparent;
+  border: 2px dashed var(--text-3);
+  border-bottom: none;
 }
 
 .chart-label {
-  font-size: 9px;
-  color: #888;
-  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-2);
+  margin-top: 4px;
   font-weight: 600;
 }
 
+/* 30 días: barras finas que se reparten el ancho (sin scroll horizontal),
+   pocas fechas en el eje y una marca para hoy. */
+.chart-bars-30 {
+  justify-content: stretch;
+  gap: 2px;
+  height: 96px;
+  padding-bottom: 16px;
+}
+
+.chart-bars-30 .chart-bar-wrapper {
+  position: relative;
+  min-width: 0;
+  max-width: none;
+}
+
+.chart-bars-30 .chart-bar {
+  border-radius: 2px 2px 0 0;
+}
+
+.chart-bars-30 .chart-bar-skipped {
+  border-width: 1.5px;
+}
+
+/* Sin registro: línea base neutra. Antes de crear el hábito: punteada. */
+.chart-bar.chart-bar-empty {
+  background: var(--stone);
+  min-height: 2px;
+}
+
+.chart-bar.chart-bar-na {
+  background: transparent;
+  border-bottom: 2px dotted var(--text-3);
+  min-height: 0;
+}
+
+.chart-bars-30 .chart-bar-today .chart-bar-track {
+  border-bottom: 2px solid var(--green-deep);
+}
+
+.chart-bars-30 .chart-label {
+  position: absolute;
+  bottom: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chart-bars-30 .chart-label.chart-tick-first {
+  left: 0;
+  transform: none;
+}
+
+.chart-bars-30 .chart-label.chart-tick-last {
+  left: auto;
+  right: 0;
+  transform: none;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* ---------- Cantidades de tiempo ---------- */
 .quantity-controls {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .quantity-summary {
   font-size: 13px;
-  color: #ccc;
+  color: var(--text-2);
   margin-bottom: 6px;
 }
 
 .progress-bar {
-  height: 10px;
-  background: #1a1a1a;
-  border-radius: 5px;
+  height: 8px;
+  background: var(--stone);
+  border-radius: 4px;
   overflow: hidden;
   margin-bottom: 10px;
 }
 
 .progress-bar-fill {
   height: 100%;
-  background: #4CAF50;
-  border-radius: 5px;
+  background: var(--green);
+  border-radius: 4px;
   transition: width 0.2s;
 }
 
+/* −5 min y +5 min juntos, uno al lado del otro. */
 .quantity-buttons {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .btn-quantity {
   min-height: 44px;
-  background: #3a3a3a;
-  color: white;
   flex-shrink: 0;
 }
 
-.quantity-manual-input {
-  flex: 1;
-  min-width: 70px;
-  text-align: center;
+/* HH : MM */
+.quantity-time-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.quantity-time-form input {
+  width: 56px;
   min-height: 44px;
+  padding: 8px 4px;
+  text-align: center;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.quantity-time-sep {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.btn-quantity-save {
+  margin-left: 6px;
+  padding: 0 16px;
+  background: var(--green-deep);
+  border-color: var(--green-deep);
+  color: var(--ivory);
+}
+
+.quantity-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.quantity-error[hidden] {
+  display: none;
 }
 
 .quantity-editor {
-  margin-top: 15px;
-  background: #2a2a2a;
-  padding: 15px;
+  margin: 12px auto 0;
+  max-width: 520px;
+  background: var(--ivory);
+  border: 1px solid var(--stone);
+  padding: 14px;
   border-radius: 10px;
 }
 
 .quantity-editor-title {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
+/* ---------- Importación y recuperación ---------- */
 .import-fatal {
-  color: #ff4444;
-  margin-bottom: 15px;
+  color: var(--danger);
+  margin-bottom: 14px;
 }
 
 .import-summary {
@@ -675,26 +1069,26 @@ select {
 
 .import-warnings-title {
   font-size: 12px;
-  color: #888;
+  color: var(--text-2);
   margin-bottom: 5px;
 }
 
 .import-warnings-list {
   font-size: 12px;
-  color: #ccc;
-  margin-bottom: 15px;
+  color: var(--ink);
+  margin-bottom: 14px;
   padding-left: 20px;
 }
 
 .import-destructive-note {
-  color: #ff4444;
+  color: var(--danger);
   font-weight: 600;
-  margin-bottom: 15px;
+  margin-bottom: 14px;
 }
 
 .blocking-recovery h1 {
   font-size: 20px;
-  margin-bottom: 15px;
+  margin-bottom: 14px;
 }
 
 .rescue-row {
@@ -707,6 +1101,26 @@ select {
 
 .rescue-disclaimer {
   font-size: 12px;
-  color: #888;
+  color: var(--text-2);
   margin-top: 20px;
+}
+
+/* ---------- Pantallas angostas (iPhone 390 px) ---------- */
+@media (max-width: 480px) {
+  body {
+    padding: 14px;
+    padding-bottom: 84px;
+  }
+
+  .calendar {
+    padding: 10px;
+  }
+
+  .calendar-grid {
+    gap: 3px;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }

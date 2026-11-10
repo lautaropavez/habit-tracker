@@ -11,6 +11,9 @@ let state = {
   habits: [],
   completions: {},
   quantities: {},
+  // Backup v3: skips[fecha][habitId] === true. SKIP es un estado neutral
+  // separado de completions: nunca equivale a completado ni a fallado.
+  skips: {},
   selectedIcon: ICONS[0],
   selectedColor: COLORS[0],
   selectedFreq: 'daily',
@@ -19,7 +22,7 @@ let state = {
   currentMonth: new Date(),
   editingId: null,
   currentView: 'today',
-  storageHealth: { habits: 'missing', completions: 'missing', quantities: 'missing' },
+  storageHealth: { habits: 'missing', completions: 'missing', quantities: 'missing', skips: 'missing' },
   // Hábito compartido entre Calendario y Estadísticas, para preservar la
   // selección al navegar entre ambas vistas. null hasta el primer render
   // con hábitos disponibles.
@@ -152,7 +155,8 @@ function inferCreatedAt(habitId, todayStr) {
 function hasStorageCorruption() {
   return state.storageHealth.habits === 'corrupt' ||
     state.storageHealth.completions === 'corrupt' ||
-    state.storageHealth.quantities === 'corrupt';
+    state.storageHealth.quantities === 'corrupt' ||
+    state.storageHealth.skips === 'corrupt';
 }
 
 function loadData() {
@@ -162,7 +166,8 @@ function loadData() {
   state.habits = [];
   state.completions = {};
   state.quantities = {};
-  state.storageHealth = { habits: 'missing', completions: 'missing', quantities: 'missing' };
+  state.skips = {};
+  state.storageHealth = { habits: 'missing', completions: 'missing', quantities: 'missing', skips: 'missing' };
 
   const h = localStorage.getItem('habits');
   if (h !== null) {
@@ -217,6 +222,21 @@ function loadData() {
     }
   }
 
+  const sk = localStorage.getItem('skips');
+  if (sk !== null) {
+    try {
+      const parsed = JSON.parse(sk);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        state.skips = parsed;
+        state.storageHealth.skips = 'valid';
+      } else {
+        state.storageHealth.skips = 'corrupt';
+      }
+    } catch (e) {
+      state.storageHealth.skips = 'corrupt';
+    }
+  }
+
   // Backup v2: todo hábito sin `kind` explícito (legado v1) se normaliza
   // como booleano -- decisión humana, ver docs/ROADMAP.md, sección
   // "Backup v2". Solo rellena el default si `kind` está ausente; nunca
@@ -226,6 +246,8 @@ function loadData() {
     freqCount: 7,
     freqPeriod: 'week',
     kind: 'boolean',
+    // Backup v3: un hábito sin `archived` (legado v1/v2) no está archivado.
+    archived: false,
     ...hb
   }));
 
@@ -254,6 +276,7 @@ function saveData() {
   localStorage.setItem('habits', JSON.stringify(state.habits));
   localStorage.setItem('completions', JSON.stringify(state.completions));
   localStorage.setItem('quantities', JSON.stringify(state.quantities));
+  localStorage.setItem('skips', JSON.stringify(state.skips));
   return { ok: true };
 }
 
@@ -289,7 +312,21 @@ function isValidSchemaName(name) {
 }
 
 const VALID_FREQ = ['daily', 'custom'];
-const VALID_FREQ_PERIOD = ['week', 'month'];
+// 'loop-month' (Backup v3): frecuencia heredada de Loop "N de D" con D=30.
+// En Loop, D=30/31 no es una ventana fija de 30 días ni un mes calendario:
+// es una ventana del largo del mes (28 a 31 días) armada a partir de los
+// registros manuales (EntryList.kt, buildIntervals). Acá solo se PRESERVA la
+// fracción original (freqCount de freqWindowDays); no se simula ninguna
+// ventana ni se convierte a mes calendario, y no hay rachas/tasas para ella.
+// Solo existe en v3; v1/v2 siguen aceptando únicamente week/month.
+const LOOP_MONTH_PERIOD = 'loop-month';
+const LOOP_MONTH_DENOMINATOR = 30;
+const VALID_FREQ_PERIOD_V2 = ['week', 'month'];
+const VALID_FREQ_PERIOD = [...VALID_FREQ_PERIOD_V2, LOOP_MONTH_PERIOD];
+
+function isLoopMonthHabit(habit) {
+  return !!habit && habit.freq === 'custom' && habit.freqPeriod === LOOP_MONTH_PERIOD;
+}
 
 function isValidFreq(freq) {
   return VALID_FREQ.includes(freq);
@@ -301,6 +338,91 @@ function isValidFreqPeriod(freqPeriod) {
 
 function isValidFreqCount(n) {
   return Number.isInteger(n) && n >= 1 && n <= 30;
+}
+
+// El denominador original solo puede ser 30 (el único que el conversor
+// produce y que se verificó contra el código de Loop).
+function isValidFreqWindowDays(n) {
+  return n === LOOP_MONTH_DENOMINATOR;
+}
+
+// Coherencia de la frecuencia heredada 'loop-month' (Backup v3). Devuelve un
+// mensaje de error o null. freqWindowDays (denominador original) existe si y
+// solo si el período es 'loop-month'; un hábito 'loop-month' es siempre freq
+// 'custom' y su objetivo no puede superar el denominador.
+function getLoopMonthFrequencyError(habit) {
+  const isLoopMonth = habit.freqPeriod === LOOP_MONTH_PERIOD;
+  const hasWindow = Object.prototype.hasOwnProperty.call(habit, 'freqWindowDays');
+  if (!isLoopMonth) {
+    return hasWindow ? 'freqWindowDays solo se permite con período loop-month.' : null;
+  }
+  if (habit.freq !== 'custom') return 'un período loop-month requiere frecuencia custom.';
+  if (!hasWindow || !isValidFreqWindowDays(habit.freqWindowDays)) return 'denominador original de Loop (freqWindowDays) inválido.';
+  if (habit.freqCount > habit.freqWindowDays) return 'la cantidad de frecuencia supera el denominador original de Loop.';
+  return null;
+}
+
+// Pura. Un hábito 'loop-month' existente conserva su frecuencia completa al
+// editarse: el modal solo ofrece semana/mes y no puede representarla.
+function resolveFrequencyForSave(existingHabit, uiFreq) {
+  if (existingHabit && existingHabit.freqPeriod === LOOP_MONTH_PERIOD) {
+    return {
+      freq: existingHabit.freq,
+      freqCount: existingHabit.freqCount,
+      freqPeriod: existingHabit.freqPeriod,
+      freqWindowDays: existingHabit.freqWindowDays
+    };
+  }
+  return { freq: uiFreq.freq, freqCount: uiFreq.freqCount, freqPeriod: uiFreq.freqPeriod };
+}
+
+// Un hábito archivado conserva su estado al editarse (la edición no lo cambia).
+function resolveArchivedForSave(existingHabit) {
+  return existingHabit ? existingHabit.archived === true : false;
+}
+
+function isArchivedHabit(habit) {
+  return !!habit && habit.archived === true;
+}
+
+// Hábitos de la experiencia diaria (vista Hoy): sin archivados. Los
+// archivados NO se borran: siguen en state.habits con todo su historial.
+function getActiveHabits() {
+  return state.habits.filter(h => !isArchivedHabit(h));
+}
+
+// Hábitos para las vistas históricas (Calendario/Estadísticas): primero los
+// activos y después los archivados, en su orden original.
+function getHabitsForHistory() {
+  return [...getActiveHabits(), ...state.habits.filter(isArchivedHabit)];
+}
+
+function getHabitDisplayName(habit) {
+  return isArchivedHabit(habit) ? `${habit.name} (archivado)` : habit.name;
+}
+
+// Texto del resumen de la vista previa de importación (puro, sin DOM).
+// Incluye archivados y SKIP para que el usuario vea lo que se va a reemplazar.
+function buildImportSummaryText(summary) {
+  const parts = [
+    `${summary.habitsCount} hábitos`,
+    `${summary.completionDatesCount} fechas con completados`,
+    `${summary.trueEntriesCount} registros completados en total`
+  ];
+  if (typeof summary.archivedCount === 'number') {
+    parts.push(`${summary.archivedCount} archivados`);
+  }
+  if (typeof summary.skipEntriesCount === 'number') {
+    parts.push(`${summary.skipEntriesCount} días omitidos (SKIP) en ${summary.skipDatesCount} fechas`);
+  }
+  if (typeof summary.loopMonthCount === 'number' && summary.loopMonthCount > 0) {
+    parts.push(`${summary.loopMonthCount} con frecuencia original de Loop (sin racha ni tasa)`);
+  }
+  return `${parts.join(', ')}. Exportado: ${summary.exportedAt}.`;
+}
+
+function formatStatValue(value, suffix) {
+  return value === null || value === undefined ? '—' : `${value}${suffix || ''}`;
 }
 
 // Backup v2: tipo de hábito. Reemplaza la ausencia de tipo de v1, donde
@@ -356,7 +478,7 @@ function resolveQuantitativeTarget(selectedTargetMinutes) {
 
 // Lectura de un registro de minutos: ausencia de entrada = 0 minutos
 // registrados ese día (distinto del contrato de export/import, donde
-// ausencia != 0 explícito -- ver buildBackupV2). Para la UI en vivo, "no
+// ausencia != 0 explícito -- ver buildBackupV3). Para la UI en vivo, "no
 // hay registro todavía" y "0 minutos" se muestran igual: 0.
 function getActualMinutes(habitId, dateStr) {
   const entry = state.quantities[dateStr];
@@ -366,6 +488,63 @@ function getActualMinutes(habitId, dateStr) {
 function getPlannedMinutes(habitId, dateStr) {
   const entry = state.quantities[dateStr];
   return (entry && entry[habitId]) ? entry[habitId].plannedMinutes : null;
+}
+
+// Cantidades de tiempo: la unidad única de v3 es 'minutes' y el dato
+// persistido siempre son minutos totales. Horas/minutos son solo la forma
+// de ingresar y mostrar: 135 minutos <-> 2 h 15 min.
+const TIME_MAX_HOURS = 24;
+const TIME_MAX_MINUTES_PART = 59;
+
+// 0 -> "0 min", 45 -> "45 min", 60 -> "1 h", 135 -> "2 h 15 min".
+function formatMinutesText(total) {
+  if (!isSafeNonNegativeInt(total)) return '0 min';
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+// Versión corta para espacios chicos (celdas del calendario, gráfico).
+function formatMinutesCompact(total) {
+  if (!isSafeNonNegativeInt(total)) return '0m';
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`;
+}
+
+function splitMinutes(total) {
+  const safe = isSafeNonNegativeInt(total) ? total : 0;
+  return { hours: Math.floor(safe / 60), minutes: safe % 60 };
+}
+
+// Valida los dos campos (HH : MM) y devuelve los minutos totales. Estricto:
+// hasta dos dígitos por campo (sin signo, decimales ni notación
+// científica), horas 0-24, minutos 0-59 y total máximo 1440 (con 24 horas
+// los minutos deben ser 00). Un campo vacío es inválido (no se asume 0,
+// para no borrar un registro por accidente) y nada se trunca en silencio.
+function parseHoursMinutes(hoursRaw, minutesRaw) {
+  const hStr = String(hoursRaw === null || hoursRaw === undefined ? '' : hoursRaw).trim();
+  const mStr = String(minutesRaw === null || minutesRaw === undefined ? '' : minutesRaw).trim();
+  if (hStr === '' || mStr === '') {
+    return { ok: false, error: 'Completá horas y minutos.' };
+  }
+  if (!/^\d{1,2}$/.test(hStr) || !/^\d{1,2}$/.test(mStr)) {
+    return { ok: false, error: 'Usá hasta dos dígitos por campo, solo números.' };
+  }
+  const hours = Number(hStr);
+  const minutes = Number(mStr);
+  if (hours > TIME_MAX_HOURS) {
+    return { ok: false, error: `Las horas van de 0 a ${TIME_MAX_HOURS}.` };
+  }
+  if (minutes > TIME_MAX_MINUTES_PART) {
+    return { ok: false, error: `Los minutos van de 0 a ${TIME_MAX_MINUTES_PART}.` };
+  }
+  if (hours === TIME_MAX_HOURS && minutes !== 0) {
+    return { ok: false, error: `Con ${TIME_MAX_HOURS} horas, los minutos deben ser 00.` };
+  }
+  return { ok: true, total: hours * 60 + minutes };
 }
 
 // Única vía de escritura de minutos (incrementos rápidos e ingreso manual
@@ -389,7 +568,11 @@ function writeActualMinutes(habitId, dateStr, newActualMinutes) {
 // negativas, sin importar cuántas veces se presione "-5 min".
 function incrementQuantity(habitId, dateStr, deltaMinutes) {
   const current = getActualMinutes(habitId, dateStr);
-  writeActualMinutes(habitId, dateStr, Math.max(0, current + deltaMinutes));
+  // Mismo tope de 24 h que el ingreso manual. Un registro histórico que ya
+  // lo supera (el conversor no impone tope) nunca se recorta ni crece con
+  // +5: solo puede bajar con -5.
+  const ceiling = Math.max(current, TIME_MAX_HOURS * 60);
+  writeActualMinutes(habitId, dateStr, Math.min(ceiling, Math.max(0, current + deltaMinutes)));
   render();
 }
 
@@ -472,7 +655,7 @@ function generateHabitId() {
 // Backup v2 antes de exportar. Nunca repara, trunca ni normaliza el dato
 // inválido -- solo lo reporta y aborta. Las únicas normalizaciones
 // permitidas (completions false y fechas vacías) ocurren después, en
-// buildBackupV2(), nunca acá.
+// buildBackupV3(), nunca acá.
 function validateExportState() {
   if (hasStorageCorruption()) {
     return { ok: false, error: 'No se puede exportar mientras los datos guardados estén dañados.' };
@@ -519,6 +702,13 @@ function validateExportState() {
     if (!isValidFreqCount(habit.freqCount)) {
       return { ok: false, error: `${label}: cantidad de frecuencia inválida (1 a 30).` };
     }
+    const loopMonthError = getLoopMonthFrequencyError(habit);
+    if (loopMonthError) {
+      return { ok: false, error: `${label}: ${loopMonthError}` };
+    }
+    if (typeof habit.archived !== 'boolean') {
+      return { ok: false, error: `${label}: estado archivado inválido.` };
+    }
     if (!isValidKind(habit.kind)) {
       return { ok: false, error: `${label}: tipo (kind) inválido.` };
     }
@@ -558,7 +748,7 @@ function validateExportState() {
       if (entry[habitId] !== true && entry[habitId] !== false) {
         return { ok: false, error: `Valor de completado inválido para "${dateKey}".` };
       }
-      // Solo las entradas true sobreviven al export (ver buildBackupV2);
+      // Solo las entradas true sobreviven al export (ver buildBackupV3);
       // una entrada true que referencia un hábito inexistente sería
       // exportada como dato incoherente, así que se trata como fatal.
       // Una entrada false huérfana nunca llega al export, así que no
@@ -608,13 +798,45 @@ function validateExportState() {
     }
   }
 
+  if (!state.skips || typeof state.skips !== 'object' || Array.isArray(state.skips)) {
+    return { ok: false, error: 'Registro de omitidos (skips) inválido.' };
+  }
+
+  for (const dateKey in state.skips) {
+    const dateObj = parseLocalDate(dateKey);
+    if (!dateObj) {
+      return { ok: false, error: `Fecha de omitido inválida: "${dateKey}".` };
+    }
+    if (dateObj > today) {
+      return { ok: false, error: `Fecha de omitido futura: "${dateKey}".` };
+    }
+    const entry = state.skips[dateKey];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, error: `Registro de omitidos inválido para "${dateKey}".` };
+    }
+    for (const habitId in entry) {
+      if (entry[habitId] !== true) {
+        return { ok: false, error: `Valor de omitido inválido para "${dateKey}".` };
+      }
+      if (!seenIds.has(habitId)) {
+        return { ok: false, error: `Omitido huérfano: "${dateKey}" referencia un hábito inexistente.` };
+      }
+      if (habitKindById.get(habitId) !== 'boolean') {
+        return { ok: false, error: `Omitido "${dateKey}" referencia un hábito que no es booleano.` };
+      }
+      if (state.completions[dateKey] && state.completions[dateKey][habitId] === true) {
+        return { ok: false, error: `Omitido y completado a la vez en "${dateKey}".` };
+      }
+    }
+  }
+
   return { ok: true };
 }
 
 // Pura: asume que validateExportState() ya dio ok. Construye el objeto
 // final campo por campo (nunca copia el hábito vivo completo por spread),
 // para que ninguna propiedad extra accidental llegue al backup.
-function buildBackupV2() {
+function buildBackupV3() {
   const habits = state.habits.map(h => {
     const out = {
       id: h.id,
@@ -625,8 +847,12 @@ function buildBackupV2() {
       freqCount: h.freqCount,
       freqPeriod: h.freqPeriod,
       createdAt: h.createdAt,
-      kind: h.kind
+      kind: h.kind,
+      archived: h.archived
     };
+    if (h.freqPeriod === LOOP_MONTH_PERIOD) {
+      out.freqWindowDays = h.freqWindowDays;
+    }
     if (h.kind === 'quantitative') {
       out.unit = h.unit;
       out.target = h.target;
@@ -662,12 +888,24 @@ function buildBackupV2() {
     }
   }
 
+  const skips = {};
+  for (const dateKey in state.skips) {
+    const entry = state.skips[dateKey];
+    const ids = Object.keys(entry).filter(id => entry[id] === true);
+    if (ids.length > 0) {
+      const cleanEntry = {};
+      ids.forEach(id => { cleanEntry[id] = true; });
+      skips[dateKey] = cleanEntry;
+    }
+  }
+
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAt: new Date().toISOString(),
     habits,
     completions,
-    quantities
+    quantities,
+    skips
   };
 }
 
@@ -680,7 +918,7 @@ async function exportBackup() {
     return;
   }
 
-  const backup = buildBackupV2();
+  const backup = buildBackupV3();
   const json = JSON.stringify(backup, null, 2);
   const now = new Date();
   const filename = `habitos-backup-${toLocalDateStr(now)}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}.json`;
@@ -770,14 +1008,16 @@ function validateBackup(rawText) {
     return fail('La raíz del backup debe ser un objeto.');
   }
 
-  if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) {
-    return fail('schemaVersion no es 1 ni 2.');
+  if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2 && parsed.schemaVersion !== 3) {
+    return fail('schemaVersion no es 1, 2 ni 3.');
   }
   const schemaVersion = parsed.schemaVersion;
 
   const ALLOWED_ROOT = schemaVersion === 1
     ? ['schemaVersion', 'exportedAt', 'habits', 'completions']
-    : ['schemaVersion', 'exportedAt', 'habits', 'completions', 'quantities'];
+    : schemaVersion === 2
+      ? ['schemaVersion', 'exportedAt', 'habits', 'completions', 'quantities']
+      : ['schemaVersion', 'exportedAt', 'habits', 'completions', 'quantities', 'skips'];
   const rootKeys = Object.keys(parsed);
   const unknownRoot = rootKeys.filter(k => !ALLOWED_ROOT.includes(k));
   if (unknownRoot.length > 0) return fail(`Campo desconocido en la raíz: "${unknownRoot[0]}".`);
@@ -795,9 +1035,14 @@ function validateBackup(rawText) {
   if (!parsed.completions || typeof parsed.completions !== 'object' || Array.isArray(parsed.completions)) {
     return fail('"completions" debe ser un objeto.');
   }
-  if (schemaVersion === 2) {
+  if (schemaVersion >= 2) {
     if (!parsed.quantities || typeof parsed.quantities !== 'object' || Array.isArray(parsed.quantities)) {
       return fail('"quantities" debe ser un objeto.');
+    }
+  }
+  if (schemaVersion === 3) {
+    if (!parsed.skips || typeof parsed.skips !== 'object' || Array.isArray(parsed.skips)) {
+      return fail('"skips" debe ser un objeto.');
     }
   }
 
@@ -819,12 +1064,18 @@ function validateBackup(rawText) {
     // hábito solo para el caso cuantitativo.
     let kind = 'boolean';
     let allowedHabitFields = BASE_HABIT_FIELDS;
-    if (schemaVersion === 2) {
+    if (schemaVersion >= 2) {
       if (!isValidKind(habit.kind)) return fail(`${label}: tipo (kind) inválido.`);
       kind = habit.kind;
       allowedHabitFields = kind === 'quantitative'
         ? [...BASE_HABIT_FIELDS, 'kind', 'unit', 'target']
         : [...BASE_HABIT_FIELDS, 'kind'];
+      if (schemaVersion === 3) {
+        // v3: `archived` obligatorio; `freqWindowDays` solo si el período
+        // es 'loop-month' (mismo patrón que unit/target para cuantitativos).
+        allowedHabitFields = [...allowedHabitFields, 'archived'];
+        if (habit.freqPeriod === LOOP_MONTH_PERIOD) allowedHabitFields.push('freqWindowDays');
+      }
     }
 
     const habitKeys = Object.keys(habit);
@@ -844,8 +1095,14 @@ function validateBackup(rawText) {
     if (countCodePoints(habit.icon) > 8) return fail(`${label}: ícono demasiado largo.`);
     if (!isValidColorHex(habit.color)) return fail(`${label}: color inválido.`);
     if (!isValidFreq(habit.freq)) return fail(`${label}: frecuencia inválida.`);
-    if (!isValidFreqPeriod(habit.freqPeriod)) return fail(`${label}: período de frecuencia inválido.`);
+    const periodAllowed = schemaVersion === 3 ? VALID_FREQ_PERIOD : VALID_FREQ_PERIOD_V2;
+    if (!periodAllowed.includes(habit.freqPeriod)) return fail(`${label}: período de frecuencia inválido.`);
     if (!isValidFreqCount(habit.freqCount)) return fail(`${label}: cantidad de frecuencia inválida (1 a 30).`);
+    if (schemaVersion === 3) {
+      const loopMonthError = getLoopMonthFrequencyError(habit);
+      if (loopMonthError) return fail(`${label}: ${loopMonthError}`);
+      if (typeof habit.archived !== 'boolean') return fail(`${label}: estado archivado inválido.`);
+    }
 
     if (kind === 'quantitative') {
       if (!isValidUnit(habit.unit)) return fail(`${label}: unidad inválida.`);
@@ -861,8 +1118,11 @@ function validateBackup(rawText) {
     const validHabit = {
       id: habit.id, name: habit.name, icon: habit.icon, color: habit.color,
       freq: habit.freq, freqCount: habit.freqCount, freqPeriod: habit.freqPeriod,
-      createdAt: habit.createdAt, kind
+      createdAt: habit.createdAt, kind,
+      // v1/v2 no tienen `archived`: se normaliza a no archivado.
+      archived: schemaVersion === 3 ? habit.archived : false
     };
+    if (habit.freqPeriod === LOOP_MONTH_PERIOD) validHabit.freqWindowDays = habit.freqWindowDays;
     if (kind === 'quantitative') {
       validHabit.unit = habit.unit;
       validHabit.target = habit.target;
@@ -926,7 +1186,7 @@ function validateBackup(rawText) {
   // con quantities={} -- no hay manera de que v1 traiga datos
   // cuantitativos, así que no hay nada que migrar ni inferir acá.
   let outQuantities = Object.create(null);
-  if (schemaVersion === 2) {
+  if (schemaVersion >= 2) {
     const quantitiesIn = toNullProtoCopy(parsed.quantities);
     const qDateKeys = Object.keys(quantitiesIn);
     if (qDateKeys.length > MAX_IMPORT_COMPLETION_DATES) {
@@ -984,9 +1244,53 @@ function validateBackup(rawText) {
     }
   }
 
-  // Normalización interna: toda importación exitosa (v1 o v2) produce
-  // datos ya en forma v2 (decisión humana) -- v1 se trata como v2 con
-  // quantities vacío y todo hábito kind="boolean".
+  // skips: solo existe en v3. Estado neutral por fecha y hábito booleano:
+  // nunca coexiste con un completado true de la misma fecha y hábito
+  // (se rechaza, no se resuelve en silencio).
+  const outSkips = Object.create(null);
+  let skipCount = 0;
+  if (schemaVersion === 3) {
+    const skipsIn = toNullProtoCopy(parsed.skips);
+    const sDateKeys = Object.keys(skipsIn);
+    if (sDateKeys.length > MAX_IMPORT_COMPLETION_DATES) {
+      return fail(`Demasiadas fechas de omitidos (máximo ${MAX_IMPORT_COMPLETION_DATES}).`);
+    }
+    for (const dateKey of sDateKeys) {
+      const dateObj = parseLocalDate(dateKey);
+      if (!dateObj) return fail(`Fecha de omitido inválida: "${dateKey}".`);
+      if (dateObj > today) return fail(`Fecha de omitido futura: "${dateKey}".`);
+
+      const entry = skipsIn[dateKey];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return fail(`Registro de omitidos inválido para "${dateKey}".`);
+      }
+      const entrySafe = toNullProtoCopy(entry);
+      const outEntry = Object.create(null);
+      for (const habitId of Object.keys(entrySafe)) {
+        if (entrySafe[habitId] !== true) return fail(`Valor de omitido inválido para "${dateKey}".`);
+        if (!seenIds.has(habitId)) {
+          return fail(`Omitido huérfano: "${dateKey}" referencia un hábito inexistente.`);
+        }
+        if (habitKindById.get(habitId) !== 'boolean') {
+          return fail(`Omitido "${dateKey}" referencia un hábito que no es booleano.`);
+        }
+        if (outCompletions[dateKey] && outCompletions[dateKey][habitId] === true) {
+          return fail(`Omitido y completado a la vez en "${dateKey}".`);
+        }
+        skipCount++;
+        if (skipCount > MAX_IMPORT_TRUE_ENTRIES) {
+          return fail(`Demasiadas entradas de omitidos (máximo ${MAX_IMPORT_TRUE_ENTRIES}).`);
+        }
+        outEntry[habitId] = true;
+      }
+      if (Object.keys(outEntry).length > 0) outSkips[dateKey] = outEntry;
+    }
+  }
+
+  // Normalización interna: toda importación exitosa (v1, v2 o v3) produce
+  // datos ya en forma v3 (decisión humana) -- v1/v2 se tratan como v3 con
+  // skips vacío, archived=false y, en v1, quantities vacío y todo hábito
+  // kind="boolean".
   return {
     ok: true,
     fatal: null,
@@ -996,14 +1300,19 @@ function validateBackup(rawText) {
       completionDatesCount: Object.keys(outCompletions).length,
       trueEntriesCount: trueCount,
       quantityDatesCount: Object.keys(outQuantities).length,
+      skipDatesCount: Object.keys(outSkips).length,
+      skipEntriesCount: skipCount,
+      archivedCount: validHabits.filter(h => h.archived).length,
+      loopMonthCount: validHabits.filter(h => h.freqPeriod === LOOP_MONTH_PERIOD).length,
       exportedAt: parsed.exportedAt
     },
     data: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: parsed.exportedAt,
       habits: validHabits,
       completions: outCompletions,
-      quantities: outQuantities
+      quantities: outQuantities,
+      skips: outSkips
     }
   };
 }
@@ -1064,17 +1373,29 @@ function isStructurallyValidQuantitiesJson(str) {
   }
 }
 
+// Misma forma raíz que completions.
+function isStructurallyValidSkipsJson(str) {
+  try {
+    const parsed = JSON.parse(str);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch (e) {
+    return false;
+  }
+}
+
 // Verificación estructural post-escritura: excepción de lectura = fallo de
 // verificación (no éxito ambiguo), dispara el mismo camino de rollback que
 // una discrepancia real de contenido.
-function verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr) {
+function verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr, newSkipsStr) {
   try {
     return localStorage.getItem('habits') === newHabitsStr &&
       localStorage.getItem('completions') === newCompletionsStr &&
       localStorage.getItem('quantities') === newQuantitiesStr &&
+      localStorage.getItem('skips') === newSkipsStr &&
       isStructurallyValidHabitsJson(localStorage.getItem('habits')) &&
       isStructurallyValidCompletionsJson(localStorage.getItem('completions')) &&
-      isStructurallyValidQuantitiesJson(localStorage.getItem('quantities'));
+      isStructurallyValidQuantitiesJson(localStorage.getItem('quantities')) &&
+      isStructurallyValidSkipsJson(localStorage.getItem('skips'));
   } catch (e) {
     return false;
   }
@@ -1096,21 +1417,24 @@ function restoreOneKey(key, rawValue) {
   return writeAndVerify(key, rawValue);
 }
 
-// Restaura las TRES claves como una sola unidad lógica.
-function restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw) {
+// Restaura las CUATRO claves como una sola unidad lógica. Se intentan
+// todas aunque alguna falle, para dejar el menor daño posible.
+function restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw) {
   const habitsOk = restoreOneKey('habits', habitsRaw);
   const completionsOk = restoreOneKey('completions', completionsRaw);
   const quantitiesOk = restoreOneKey('quantities', quantitiesRaw);
-  return { verified: habitsOk && completionsOk && quantitiesOk };
+  const skipsOk = restoreOneKey('skips', skipsRaw === undefined ? null : skipsRaw);
+  return { verified: habitsOk && completionsOk && quantitiesOk && skipsOk };
 }
 
-function buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw) {
+function buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw) {
   return JSON.stringify({
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     createdAt: new Date().toISOString(),
     habitsRaw: habitsRaw,
     completionsRaw: completionsRaw,
-    quantitiesRaw: quantitiesRaw
+    quantitiesRaw: quantitiesRaw,
+    skipsRaw: skipsRaw
   });
 }
 
@@ -1132,11 +1456,18 @@ function parseSnapshotShape(raw) {
     return null;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  if (parsed.snapshotVersion !== 2) return null;
+  // snapshotVersion 3 agrega skipsRaw (Backup v3). Un snapshot version 2
+  // (escrito por la app anterior, que no tenía skips) sigue siendo
+  // restaurable: su estado previo no tenía la clave 'skips', así que se
+  // restaura como ausente. La versión 1 sigue sin aceptarse.
+  if (parsed.snapshotVersion !== 2 && parsed.snapshotVersion !== 3) return null;
   if (typeof parsed.createdAt !== 'string' || isNaN(Date.parse(parsed.createdAt))) return null;
   if (!(parsed.habitsRaw === null || typeof parsed.habitsRaw === 'string')) return null;
   if (!(parsed.completionsRaw === null || typeof parsed.completionsRaw === 'string')) return null;
   if (!(parsed.quantitiesRaw === null || typeof parsed.quantitiesRaw === 'string')) return null;
+  if (parsed.snapshotVersion === 3 &&
+      !(parsed.skipsRaw === null || typeof parsed.skipsRaw === 'string')) return null;
+  if (parsed.snapshotVersion === 2) parsed.skipsRaw = null;
   return parsed;
 }
 
@@ -1158,10 +1489,11 @@ function parseMarkerShape(raw) {
 // memoria. Nunca escribe una key de prueba ni un relleno. No garantiza
 // que los setItem() reales vayan a tener éxito -- esos, con su propia
 // verificación, son la única fuente de verdad.
-function estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, snapshotStr, markerStr) {
+function estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, newSkipsStr, snapshotStr, markerStr) {
   const TYPICAL_ORIGIN_QUOTA = 5 * 1024 * 1024;
   const estimatedBytes = utf8ByteLength(newHabitsStr) + utf8ByteLength(newCompletionsStr) +
-    utf8ByteLength(newQuantitiesStr) + utf8ByteLength(snapshotStr) + utf8ByteLength(markerStr);
+    utf8ByteLength(newQuantitiesStr) + utf8ByteLength(newSkipsStr) +
+    utf8ByteLength(snapshotStr) + utf8ByteLength(markerStr);
   return { estimatedBytes, obviouslyTooLarge: estimatedBytes > TYPICAL_ORIGIN_QUOTA };
 }
 
@@ -1189,19 +1521,22 @@ function performImportReplacement(validatedData) {
   const newHabitsStr = JSON.stringify(validatedData.habits);
   const newCompletionsStr = JSON.stringify(validatedData.completions);
   const newQuantitiesStr = JSON.stringify(validatedData.quantities || {});
+  const newSkipsStr = JSON.stringify(validatedData.skips || {});
   const habitsRawRead = readExactRaw('habits');
   const completionsRawRead = readExactRaw('completions');
   const quantitiesRawRead = readExactRaw('quantities');
-  if (!habitsRawRead.ok || !completionsRawRead.ok || !quantitiesRawRead.ok) {
+  const skipsRawRead = readExactRaw('skips');
+  if (!habitsRawRead.ok || !completionsRawRead.ok || !quantitiesRawRead.ok || !skipsRawRead.ok) {
     return { ok: false, error: 'No se pudo leer el estado actual antes de importar. No se modificaron tus datos.' };
   }
   const habitsRaw = habitsRawRead.value;
   const completionsRaw = completionsRawRead.value;
   const quantitiesRaw = quantitiesRawRead.value;
-  const snapshotStr = buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw);
+  const skipsRaw = skipsRawRead.value;
+  const snapshotStr = buildSnapshot(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw);
   const markerStr = buildMarker();
 
-  const capacity = estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, snapshotStr, markerStr);
+  const capacity = estimateImportCapacity(newHabitsStr, newCompletionsStr, newQuantitiesStr, newSkipsStr, snapshotStr, markerStr);
   if (capacity.obviouslyTooLarge) {
     return { ok: false, error: 'El backup es demasiado grande para el almacenamiento disponible.' };
   }
@@ -1221,10 +1556,11 @@ function performImportReplacement(validatedData) {
   const habitsWriteOk = writeAndVerify('habits', newHabitsStr);
   const completionsWriteOk = habitsWriteOk && writeAndVerify('completions', newCompletionsStr);
   const quantitiesWriteOk = completionsWriteOk && writeAndVerify('quantities', newQuantitiesStr);
-  const structuralOk = quantitiesWriteOk && verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr);
+  const skipsWriteOk = quantitiesWriteOk && writeAndVerify('skips', newSkipsStr);
+  const structuralOk = skipsWriteOk && verifyStructuralWrite(newHabitsStr, newCompletionsStr, newQuantitiesStr, newSkipsStr);
 
   if (!structuralOk) {
-    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, 'No se pudieron escribir o verificar los datos importados.');
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw, 'No se pudieron escribir o verificar los datos importados.');
   }
 
   let markerRemoved = false;
@@ -1238,7 +1574,7 @@ function performImportReplacement(validatedData) {
   if (!markerRemoved) {
     // Decisión humana: los datos nuevos ya están escritos y verificados,
     // pero el import NO se considera exitoso si el marker sigue presente.
-    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, 'La importación no pudo cerrarse de forma segura y fue revertida.');
+    return finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw, 'La importación no pudo cerrarse de forma segura y fue revertida.');
   }
 
   // Éxito real. El snapshot se conserva para cleanup en el próximo
@@ -1248,8 +1584,8 @@ function performImportReplacement(validatedData) {
   return { ok: true };
 }
 
-function finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, publicMessage) {
-  const restore = restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw);
+function finishWithRollbackOrBlock(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw, publicMessage) {
+  const restore = restoreExactRaw(habitsRaw, completionsRaw, quantitiesRaw, skipsRaw);
   if (!restore.verified) {
     enterBlockingRecovery('rollback-failed');
     return { ok: false, error: `${publicMessage} Además, no se pudo restaurar el estado anterior de forma segura.` };
@@ -1301,7 +1637,7 @@ function recoverInterruptedImport() {
     return { state: 'blocking-recovery', reason: !marker ? 'marker-corrupt' : 'snapshot-corrupt' };
   }
 
-  const restore = restoreExactRaw(snapshot.habitsRaw, snapshot.completionsRaw, snapshot.quantitiesRaw);
+  const restore = restoreExactRaw(snapshot.habitsRaw, snapshot.completionsRaw, snapshot.quantitiesRaw, snapshot.skipsRaw);
   if (!restore.verified) {
     return { state: 'blocking-recovery', reason: 'restore-verify-failed' };
   }
@@ -1368,6 +1704,7 @@ function renderBlockingRecovery(reason) {
     ['habits', 'habits (hábitos en vivo)'],
     ['completions', 'completions (completados en vivo)'],
     ['quantities', 'quantities (cantidades en vivo)'],
+    ['skips', 'skips (omitidos en vivo)'],
     [SNAPSHOT_KEY, 'snapshot de la importación interrumpida'],
     [MARKER_KEY, 'marcador de la importación interrumpida']
   ].forEach(([key, label]) => {
@@ -1468,10 +1805,7 @@ function renderImportPreview(validation) {
   } else {
     const summary = document.createElement('div');
     summary.className = 'import-summary';
-    summary.textContent = `${validation.summary.habitsCount} hábitos, ` +
-      `${validation.summary.completionDatesCount} fechas con completados, ` +
-      `${validation.summary.trueEntriesCount} registros completados en total. ` +
-      `Exportado: ${validation.summary.exportedAt}.`;
+    summary.textContent = buildImportSummaryText(validation.summary);
     content.appendChild(summary);
 
     if (validation.warnings.length > 0) {
@@ -1587,12 +1921,148 @@ function goToHabitStats(habitId) {
   switchToView('stats');
 }
 
+// ---------------------------------------------------------------------
+// Tema (Natural Linen claro / Noir Editorial oscuro)
+//
+// La preferencia vive en su propia clave de localStorage, fuera de las
+// cuatro claves de datos: no forma parte del backup v3 ni del snapshot de
+// importación. Cualquier valor desconocido o un storage que falla cae en el
+// tema claro. El mismo valor lo aplica un script mínimo en <head> antes del
+// primer render (para no parpadear).
+// ---------------------------------------------------------------------
+const THEME_KEY = 'habitTracker.theme';
+const THEME_LIGHT = 'light';
+const THEME_DARK = 'dark';
+const THEME_COLORS = { light: '#F6F3EA', dark: '#0A0A0A' };
+
+function readThemePreference() {
+  try {
+    return localStorage.getItem(THEME_KEY) === THEME_DARK ? THEME_DARK : THEME_LIGHT;
+  } catch (e) {
+    return THEME_LIGHT;
+  }
+}
+
+function saveThemePreference(theme) {
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function applyTheme(theme) {
+  const dark = theme === THEME_DARK;
+  const root = document.documentElement;
+  if (dark) root.setAttribute('data-theme', THEME_DARK);
+  else root.removeAttribute('data-theme');
+
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', dark ? THEME_COLORS.dark : THEME_COLORS.light);
+
+  // El botón dice qué tema activa al tocarlo (no el actual).
+  const btn = document.getElementById('themeBtn');
+  const label = document.getElementById('themeBtnLabel');
+  const next = dark ? 'Natural Linen (claro)' : 'Noir Editorial (oscuro)';
+  btn.setAttribute('aria-label', `Activar tema ${next}`);
+  btn.setAttribute('title', `Activar tema ${next}`);
+  btn.setAttribute('data-next-theme', dark ? THEME_LIGHT : THEME_DARK);
+  label.textContent = dark ? 'Claro' : 'Oscuro';
+}
+
+function toggleTheme() {
+  const next = readThemePreference() === THEME_DARK ? THEME_LIGHT : THEME_DARK;
+  saveThemePreference(next);
+  // Si el storage no deja guardar, el cambio vale igual para esta sesión.
+  applyTheme(next);
+}
+
+// ---------------------------------------------------------------------
+// Menú ⋮ del encabezado (Exportar / Importar backup)
+//
+// Solo cambia dónde viven los dos botones: las funciones que ejecutan
+// (exportBackup, openImportPicker) y toda su validación quedan intactas.
+// ---------------------------------------------------------------------
+function getHeaderMenuItems() {
+  return [document.getElementById('exportBtn'), document.getElementById('importBtn')];
+}
+
+function isHeaderMenuOpen() {
+  return !document.getElementById('headerMenu').hidden;
+}
+
+function setHeaderMenuOpen(open, restoreFocus) {
+  const menu = document.getElementById('headerMenu');
+  const btn = document.getElementById('menuBtn');
+  menu.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) getHeaderMenuItems()[0].focus();
+  else if (restoreFocus) btn.focus();
+}
+
+function toggleHeaderMenu() {
+  setHeaderMenuOpen(!isHeaderMenuOpen(), false);
+}
+
+// Teclado: Escape cierra y devuelve el foco al botón; flechas, Inicio y Fin
+// recorren las opciones; Tab saca el foco del menú y lo cierra.
+function handleHeaderMenuKeydown(e) {
+  if (!isHeaderMenuOpen()) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    setHeaderMenuOpen(false, true);
+    return;
+  }
+  if (e.key === 'Tab') {
+    setHeaderMenuOpen(false, false);
+    return;
+  }
+  const items = getHeaderMenuItems();
+  const current = items.indexOf(e.target);
+  let target = null;
+  if (e.key === 'ArrowDown') target = items[(current + 1) % items.length];
+  else if (e.key === 'ArrowUp') target = items[(current - 1 + items.length) % items.length];
+  else if (e.key === 'Home') target = items[0];
+  else if (e.key === 'End') target = items[items.length - 1];
+  if (target) {
+    e.preventDefault();
+    target.focus();
+  }
+}
+
+// Tocar o hacer clic fuera del menú lo cierra.
+function handleHeaderMenuOutsideClick(e) {
+  if (!isHeaderMenuOpen()) return;
+  const wrap = document.getElementById('headerMenuWrap');
+  if (wrap.contains(e.target)) return;
+  setHeaderMenuOpen(false, false);
+}
+
+function setupHeaderControls() {
+  applyTheme(readThemePreference());
+  document.getElementById('themeBtn').onclick = toggleTheme;
+
+  document.getElementById('menuBtn').onclick = toggleHeaderMenu;
+  // Elegir una opción cierra el menú y ejecuta exactamente la misma acción
+  // de antes.
+  document.getElementById('exportBtn').onclick = () => {
+    setHeaderMenuOpen(false, false);
+    exportBackup();
+  };
+  document.getElementById('importBtn').onclick = () => {
+    setHeaderMenuOpen(false, false);
+    openImportPicker();
+  };
+  document.addEventListener('keydown', handleHeaderMenuKeydown);
+  document.addEventListener('click', handleHeaderMenuOutsideClick);
+}
+
 function setupEvents() {
   document.getElementById('addBtn').onclick = openModal;
   document.getElementById('cancelBtn').onclick = closeModal;
   document.getElementById('saveBtn').onclick = saveHabit;
-  document.getElementById('exportBtn').onclick = exportBackup;
-  document.getElementById('importBtn').onclick = openImportPicker;
+  setupHeaderControls();
   document.getElementById('importFileInput').onchange = handleImportFileChange;
 
   // Construye una fecha nueva con día=1 en vez de mutar currentMonth con
@@ -1641,6 +2111,9 @@ function setupEvents() {
 
 function getFreqText(habit) {
   if (habit.freq === 'daily') return 'Todos los días';
+  if (isLoopMonthHabit(habit)) {
+    return `${habit.freqCount} de ${habit.freqWindowDays} (frecuencia original de Loop, no es mes calendario)`;
+  }
   if (habit.freq === 'custom') {
     const period = habit.freqPeriod === 'week' ? 'semana' : 'mes';
     return `${habit.freqCount} veces por ${period}`;
@@ -1652,7 +2125,7 @@ function getFreqText(habit) {
 // personalizada, ej. "2 de 3 esta semana". Los diarios no lo necesitan:
 // el check de "Hoy" ya muestra su estado del día.
 function getPeriodProgressText(habit, stats) {
-  if (habit.freq !== 'custom' || !stats.currentPeriod) return '';
+  if (habit.freq !== 'custom' || !stats.currentPeriod || isLoopMonthHabit(habit)) return '';
   const period = habit.freqPeriod === 'week' ? 'esta semana' : 'este mes';
   return ` · ${stats.currentPeriod.count} de ${stats.currentPeriod.target} ${period}`;
 }
@@ -1708,7 +2181,9 @@ function createQuantityControls(habit, dateStr, corrupted) {
 
   const summary = document.createElement('div');
   summary.className = 'quantity-summary';
-  summary.textContent = target !== null ? `${actual} / ${target} min` : `${actual} min (sin objetivo)`;
+  summary.textContent = target !== null
+    ? `${formatMinutesText(actual)} / ${formatMinutesText(target)}`
+    : `${formatMinutesText(actual)} (sin objetivo)`;
   wrap.appendChild(summary);
 
   if (target !== null) {
@@ -1717,7 +2192,6 @@ function createQuantityControls(habit, dateStr, corrupted) {
     const barInner = document.createElement('div');
     barInner.className = 'progress-bar-fill';
     barInner.style.width = `${pct}%`;
-    if (isValidColorHex(habit.color)) barInner.style.background = habit.color;
     barOuter.appendChild(barInner);
     wrap.appendChild(barOuter);
   }
@@ -1732,21 +2206,6 @@ function createQuantityControls(habit, dateStr, corrupted) {
   minusBtn.disabled = corrupted;
   minusBtn.onclick = () => incrementQuantity(habit.id, dateStr, -5);
 
-  const manualInput = document.createElement('input');
-  manualInput.type = 'number';
-  manualInput.min = '0';
-  manualInput.step = '1';
-  manualInput.className = 'quantity-manual-input';
-  manualInput.value = String(actual);
-  manualInput.disabled = corrupted;
-  manualInput.setAttribute('aria-label', `Minutos registrados para ${habit.name} el ${dateStr}`);
-  manualInput.onchange = (e) => {
-    const raw = e.target.value.trim();
-    const num = raw === '' ? NaN : Number(raw);
-    const parsed = Number.isInteger(num) ? num : NaN;
-    setQuantityExact(habit.id, dateStr, parsed);
-  };
-
   const plusBtn = document.createElement('button');
   plusBtn.type = 'button';
   plusBtn.className = 'btn btn-quantity';
@@ -1755,8 +2214,79 @@ function createQuantityControls(habit, dateStr, corrupted) {
   plusBtn.onclick = () => incrementQuantity(habit.id, dateStr, 5);
 
   buttonsRow.appendChild(minusBtn);
-  buttonsRow.appendChild(manualInput);
   buttonsRow.appendChild(plusBtn);
+
+  // Ingreso exacto: Horas (0-24) + Minutos (0-59). Se guarda solo con el
+  // botón (o Enter), nunca al salir de un campo: así no se escribe un valor
+  // a medias ni se pierde el foco al pasar de Horas a Minutos.
+  const split = splitMinutes(actual);
+  const form = document.createElement('div');
+  form.className = 'quantity-time-form';
+
+  const makeInput = (className, value, placeholder, ariaKind) => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.inputMode = 'numeric';
+    input.autocomplete = 'off';
+    input.placeholder = placeholder;
+    input.className = className;
+    input.value = String(value).padStart(2, '0');
+    input.disabled = corrupted;
+    input.setAttribute('aria-label', `${ariaKind} registradas para ${habit.name} el ${dateStr}`);
+    return input;
+  };
+  const hoursInput = makeInput('quantity-hours-input', split.hours, 'HH', 'Horas');
+  const minutesInput = makeInput('quantity-minutes-input', split.minutes, 'MM', 'Minutos');
+  const separator = document.createElement('span');
+  separator.className = 'quantity-time-sep';
+  separator.setAttribute('aria-hidden', 'true');
+  separator.textContent = ':';
+  const hoursField = { input: hoursInput };
+  const minutesField = { input: minutesInput };
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'btn btn-quantity btn-quantity-save';
+  saveBtn.textContent = 'Guardar';
+  saveBtn.disabled = corrupted;
+
+  const errorBox = document.createElement('div');
+  errorBox.className = 'quantity-error';
+  errorBox.setAttribute('role', 'alert');
+  errorBox.hidden = true;
+
+  const submitTime = () => {
+    const parsed = parseHoursMinutes(hoursField.input.value, minutesField.input.value);
+    if (!parsed.ok) {
+      errorBox.textContent = parsed.error;
+      errorBox.hidden = false;
+      hoursField.input.setAttribute('aria-invalid', 'true');
+      minutesField.input.setAttribute('aria-invalid', 'true');
+      return;
+    }
+    // Sin cambio real no se escribe nada (evita crear un 0 explícito).
+    if (parsed.total === getActualMinutes(habit.id, dateStr)) {
+      errorBox.hidden = true;
+      return;
+    }
+    setQuantityExact(habit.id, dateStr, parsed.total);
+  };
+  saveBtn.onclick = submitTime;
+  [hoursField.input, minutesField.input].forEach(input => {
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitTime();
+      }
+    };
+  });
+
+  form.appendChild(hoursInput);
+  form.appendChild(separator);
+  form.appendChild(minutesInput);
+  form.appendChild(saveBtn);
+  wrap.appendChild(form);
+  wrap.appendChild(errorBox);
   wrap.appendChild(buttonsRow);
 
   return wrap;
@@ -1847,9 +2377,9 @@ function createHabitCard(habit, today) {
   const statsDiv = document.createElement('div');
   statsDiv.className = 'stats';
   [
-    ['Tasa éxito', `${stats.successRate}%`],
-    ['Racha', stats.currentStreak],
-    ['Mejor racha', stats.bestStreak],
+    ['Tasa éxito', formatStatValue(stats.successRate, '%')],
+    ['Racha', formatStatValue(stats.currentStreak)],
+    ['Mejor racha', formatStatValue(stats.bestStreak)],
     ['Total', stats.totalCompleted]
   ].forEach(([label, value]) => {
     const stat = document.createElement('div');
@@ -1878,8 +2408,16 @@ function renderHabits() {
     return;
   }
 
+  // Hoy solo muestra hábitos activos; los archivados conservan su historial
+  // y se consultan en Calendario y Estadísticas.
+  const activeHabits = getActiveHabits();
+  if (activeHabits.length === 0) {
+    container.innerHTML = '<div class="empty-state">No hay hábitos activos.<br>Los hábitos archivados se consultan en Calendario y Estadísticas.</div>';
+    return;
+  }
+
   container.innerHTML = '';
-  state.habits.forEach(habit => {
+  activeHabits.forEach(habit => {
     container.appendChild(createHabitCard(habit, today));
   });
 
@@ -1925,42 +2463,87 @@ function calculateStats(habit) {
   const target = getPeriodTarget(habit);
 
   let totalCompleted = 0;
+  let skippedDays = 0;
   for (let d = new Date(createdAtDate); d <= today; d = addDays(d, 1)) {
-    if (state.completions[toLocalDateStr(d)]?.[habit.id] === true) totalCompleted++;
+    const ds = toLocalDateStr(d);
+    if (state.completions[ds]?.[habit.id] === true) totalCompleted++;
+    else if (state.skips[ds]?.[habit.id] === true) skippedDays++;
+  }
+
+  // Frecuencia heredada de Loop (N de 30): no tiene una semántica de
+  // períodos implementada y verificada en esta app. Se conserva el total y
+  // los días omitidos, pero NO se inventan tasa ni rachas (null => "—").
+  //
+  // Hábito archivado: el contrato no tiene fecha de archivado (archivedAt),
+  // así que los días posteriores al archivado contarían como fallos y la tasa
+  // y las rachas decaerían con el tiempo. Se conservan los totales históricos
+  // y tasa/rachas se muestran como "—" (null) hasta que exista archivedAt.
+  if (isLoopMonthHabit(habit) || isArchivedHabit(habit)) {
+    return {
+      successRate: null,
+      currentStreak: null,
+      bestStreak: null,
+      totalCompleted,
+      skippedDays,
+      currentPeriod: null,
+      loopMonth: isLoopMonthHabit(habit),
+      archived: isArchivedHabit(habit)
+    };
   }
 
   const periodsStart = getFirstFullPeriodStart(habit, createdAtDate);
   const periodOrder = [];
   const periodsByKey = new Map();
+  let neutralDailySkips = 0;
 
   if (periodsStart <= today) {
     for (let d = new Date(periodsStart); d <= today; d = addDays(d, 1)) {
       const ds = toLocalDateStr(d);
       const completed = state.completions[ds]?.[habit.id] === true;
+      // SKIP es neutral: ni éxito ni fracaso. Un completado siempre tiene
+      // prioridad (el contrato impide ambos a la vez).
+      const skipped = !completed && state.skips[ds]?.[habit.id] === true;
+
+      // Hábito diario: un día omitido no forma período (no suma a la tasa,
+      // no corta ni extiende la racha).
+      if (skipped && habit.freq !== 'custom') {
+        neutralDailySkips++;
+        continue;
+      }
 
       const key = getPeriodKey(habit, d);
       if (!periodsByKey.has(key)) {
         const { start, end } = getPeriodRange(habit, d);
-        periodsByKey.set(key, { start, end, count: 0 });
+        periodsByKey.set(key, { start, end, count: 0, skips: 0 });
         periodOrder.push(key);
       }
       if (completed) periodsByKey.get(key).count++;
+      if (skipped) periodsByKey.get(key).skips++;
     }
   }
 
+  // Un período semanal/mensual con días omitidos que no alcanzó el objetivo
+  // es NEUTRAL: no se puede saber si lo habría cumplido, así que no cuenta
+  // como fallido ni como cumplido, y no rompe la racha. Si ya alcanzó el
+  // objetivo, se cumple igual (un skip no puede quitarle el éxito).
   const periods = periodOrder.map(key => {
     const p = periodsByKey.get(key);
-    return { ...p, met: p.count >= target, closed: p.end < today };
+    const met = p.count >= target;
+    return { ...p, met, neutral: !met && p.skips > 0, closed: p.end < today };
   });
 
   const closedPeriods = periods.filter(p => p.closed);
-  const successRate = closedPeriods.length
-    ? Math.round((closedPeriods.filter(p => p.met).length / closedPeriods.length) * 100)
-    : 0;
+  const scoredPeriods = closedPeriods.filter(p => !p.neutral);
+  // Sin períodos puntuables por culpa de los neutrales: no hay tasa que
+  // mostrar ("—"), nunca un 0 % engañoso. Sin skips el resultado no cambia.
+  const successRate = scoredPeriods.length
+    ? Math.round((scoredPeriods.filter(p => p.met).length / scoredPeriods.length) * 100)
+    : ((closedPeriods.length > 0 || neutralDailySkips > 0) ? null : 0);
 
   let tempStreak = 0;
   let bestStreak = 0;
   closedPeriods.forEach(p => {
+    if (p.neutral) return;
     tempStreak = p.met ? tempStreak + 1 : 0;
     bestStreak = Math.max(bestStreak, tempStreak);
   });
@@ -1985,6 +2568,7 @@ function calculateStats(habit) {
     currentStreak,
     bestStreak,
     totalCompleted,
+    skippedDays,
     currentPeriod: currentPeriodOpen ? { count: currentPeriod.count, target } : partialPeriodProgress
   };
 }
@@ -1999,8 +2583,147 @@ function toggleHabit(id, date) {
   if (!habit || habit.kind !== 'boolean') return;
   if (!state.completions[date]) state.completions[date] = {};
   state.completions[date][id] = !state.completions[date][id];
+  if (state.completions[date][id] === true) clearSkip(date, id);
   saveData();
   render();
+}
+
+// Invariante v3: una fecha/hábito nunca está a la vez completada y omitida.
+// Marcar completado reemplaza el skip (decisión explícita, no silenciosa
+// para el modelo: el usuario eligió "completado" sobre ese día).
+function clearSkip(dateStr, habitId) {
+  const entry = state.skips[dateStr];
+  if (!entry || typeof entry !== 'object') return;
+  delete entry[habitId];
+  if (Object.keys(entry).length === 0) delete state.skips[dateStr];
+}
+
+function clearCompletion(dateStr, habitId) {
+  const entry = state.completions[dateStr];
+  if (!entry || typeof entry !== 'object') return;
+  delete entry[habitId];
+  if (Object.keys(entry).length === 0) delete state.completions[dateStr];
+}
+
+// Ciclo de tres estados del Calendario para hábitos booleanos:
+//   sin registro -> completado -> SKIP -> sin registro.
+// Un día con completion Y skip a la vez (dato inconsistente) se lee como
+// completado, y el siguiente paso del ciclo lo deja solo en SKIP.
+const BOOLEAN_DAY_STATES = ['none', 'completed', 'skipped'];
+
+function getBooleanDayState(habitId, dateStr) {
+  if (state.completions[dateStr]?.[habitId] === true) return 'completed';
+  if (state.skips[dateStr]?.[habitId] === true) return 'skipped';
+  return 'none';
+}
+
+function getNextBooleanDayState(current) {
+  const i = BOOLEAN_DAY_STATES.indexOf(current);
+  return BOOLEAN_DAY_STATES[(i + 1) % BOOLEAN_DAY_STATES.length];
+}
+
+// Aplica un estado a una fecha manteniendo la invariante: nunca completion
+// y skip a la vez. 'none' elimina ambos registros (no deja un false).
+function applyBooleanDayState(habitId, dateStr, newState) {
+  if (newState === 'completed') {
+    if (!state.completions[dateStr]) state.completions[dateStr] = {};
+    state.completions[dateStr][habitId] = true;
+    clearSkip(dateStr, habitId);
+  } else if (newState === 'skipped') {
+    clearCompletion(dateStr, habitId);
+    if (!state.skips[dateStr]) state.skips[dateStr] = {};
+    state.skips[dateStr][habitId] = true;
+  } else {
+    clearCompletion(dateStr, habitId);
+    clearSkip(dateStr, habitId);
+  }
+}
+
+// Avanza un paso el ciclo de un día. Valida antes de tocar nada: almacenamiento
+// sano, hábito booleano existente, fecha real, no futura y no anterior a
+// createdAt. Persiste con saveData(); si la persistencia falla, revierte el
+// estado en memoria y no deja la fecha a medias.
+function cycleBooleanDay(habitId, dateStr) {
+  if (hasStorageCorruption()) return { ok: false, reason: 'storage-corrupted' };
+  const habit = state.habits.find(h => h.id === habitId);
+  if (!habit) return { ok: false, reason: 'unknown-habit' };
+  if (habit.kind !== 'boolean') return { ok: false, reason: 'not-boolean' };
+  const date = typeof dateStr === 'string' ? parseLocalDate(dateStr) : null;
+  if (!date) return { ok: false, reason: 'invalid-date' };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (date > today) return { ok: false, reason: 'future-date' };
+  // Cualquier fecha pasada o actual es editable, también las anteriores a
+  // createdAt (esas no cuentan en las estadísticas, pero se conservan y se
+  // pueden corregir). Solo se rechazan las futuras.
+
+  const previous = getBooleanDayState(habitId, dateStr);
+  const hadCompletion = state.completions[dateStr]?.[habitId];
+  const hadSkip = state.skips[dateStr]?.[habitId];
+  const next = getNextBooleanDayState(previous);
+  applyBooleanDayState(habitId, dateStr, next);
+  let saved;
+  try {
+    saved = saveData();
+  } catch (e) {
+    saved = { ok: false, reason: 'storage-error' };
+  }
+  if (!saved.ok) {
+    // Rollback en memoria al estado exacto anterior.
+    clearCompletion(dateStr, habitId);
+    clearSkip(dateStr, habitId);
+    if (hadCompletion !== undefined) {
+      if (!state.completions[dateStr]) state.completions[dateStr] = {};
+      state.completions[dateStr][habitId] = hadCompletion;
+    }
+    if (hadSkip !== undefined) {
+      if (!state.skips[dateStr]) state.skips[dateStr] = {};
+      state.skips[dateStr][habitId] = hadSkip;
+    }
+    // Mejor esfuerzo: si saveData() alcanzó a escribir alguna clave antes de
+    // fallar, vuelve a dejar el almacenamiento igual a la memoria revertida.
+    try { saveData(); } catch (e) { /* queda para el próximo guardado */ }
+    return { ok: false, reason: saved.reason || 'storage-error' };
+  }
+  return { ok: true, previous, state: next };
+}
+
+// ¿Se puede editar esta fecha en el Calendario? Misma regla que cycleBooleanDay
+// y que el editor de minutos: fecha real y no futura (las anteriores a
+// createdAt también se pueden registrar y corregir).
+function isCalendarDateEditable(habit, dateStr) {
+  const date = parseLocalDate(dateStr);
+  if (!date || !habit) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date <= today;
+}
+
+// Día anterior a la creación del hábito: editable, pero fuera de las
+// estadísticas (que nunca cuentan antes de createdAt).
+function isBeforeCreated(habit, dateStr) {
+  return !!habit && typeof habit.createdAt === 'string' && dateStr < habit.createdAt;
+}
+
+const BOOLEAN_DAY_STATE_LABELS = { none: 'sin registro', completed: 'completado', skipped: 'omitido (SKIP)' };
+const BOOLEAN_DAY_ACTION_LABELS = {
+  completed: 'marcar como completado',
+  skipped: 'marcar como omitido',
+  none: 'quitar el registro'
+};
+
+// Etiqueta accesible de una celda booleana: estado actual y qué hará el toque.
+function getBooleanDayAriaLabel(habit, dateStr) {
+  const day = Number(dateStr.slice(8, 10));
+  const current = getBooleanDayState(habit.id, dateStr);
+  let label = `${day}, ${BOOLEAN_DAY_STATE_LABELS[current]}`;
+  if (isCalendarDateEditable(habit, dateStr)) {
+    label += `. Tocar para ${BOOLEAN_DAY_ACTION_LABELS[getNextBooleanDayState(current)]}`;
+    if (isBeforeCreated(habit, dateStr)) label += '. Anterior a la creación del hábito: no cuenta en las estadísticas';
+  } else {
+    label += '. No editable';
+  }
+  return label;
 }
 
 function deleteHabit(id) {
@@ -2018,6 +2741,11 @@ function deleteHabit(id) {
       delete state.quantities[day][id];
     }
   }
+  for (const day in state.skips) {
+    if (state.skips[day] && typeof state.skips[day] === 'object') {
+      delete state.skips[day][id];
+    }
+  }
 
   saveData();
   render();
@@ -2033,7 +2761,10 @@ function editHabit(id) {
   state.selectedIcon = habit.icon;
   state.selectedColor = habit.color;
   state.selectedFreq = habit.freq;
-  state.freqCount = habit.freqCount || 7;
+  // freqCount viene de localStorage (no confiable): un valor que no sea un
+  // entero 1-30 no entra al estado del modal. El registro guardado no se
+  // toca hasta que el usuario guarde (y saveHabit lo vuelve a validar).
+  state.freqCount = isValidFreqCount(habit.freqCount) ? habit.freqCount : 7;
   state.freqPeriod = habit.freqPeriod || 'week';
   state.selectedKind = habit.kind;
   state.selectedTargetMinutes = (habit.kind === 'quantitative' && habit.target) ? habit.target.minutes : null;
@@ -2081,7 +2812,26 @@ function renderModalContent() {
     };
   });
 
-  document.getElementById('freqOptions').innerHTML = `
+  // Frecuencia heredada de Loop (N de 30): el modal no puede representarla ni
+  // editarla; se muestra fija (solo lectura) y se conserva intacta al guardar
+  // (ver resolveFrequencyForSave).
+  const lockedFreq = !!state.editingId && state.freqPeriod === LOOP_MONTH_PERIOD;
+  const freqGroup = document.getElementById('freqOptions');
+  if (lockedFreq) {
+    const editingHabit = state.habits.find(h => h.id === state.editingId);
+    freqGroup.innerHTML = '';
+    const fixed = document.createElement('div');
+    fixed.className = 'freq-option selected freq-readonly';
+    fixed.textContent = editingHabit ? getFreqText(editingHabit) : '';
+    const fixedNote = document.createElement('div');
+    fixedNote.className = 'kind-readonly-note';
+    fixedNote.textContent = 'Esta frecuencia viene de Loop y no se puede editar; se conserva tal cual.';
+    freqGroup.appendChild(fixed);
+    freqGroup.appendChild(fixedNote);
+  } else {
+    // Solo un entero llega al atributo value; cualquier otra cosa queda vacía.
+    const freqCountAttr = Number.isInteger(state.freqCount) ? String(state.freqCount) : '';
+    freqGroup.innerHTML = `
 <div class="freq-option ${state.selectedFreq === 'daily' ? 'selected' : ''}" data-freq="daily">
 <strong>Todos los días</strong>
 </div>
@@ -2089,7 +2839,7 @@ function renderModalContent() {
 <strong>Personalizado</strong>
 ${state.selectedFreq === 'custom' ? `
 <div class="freq-details">
-<input type="number" min="1" max="30" value="${state.freqCount}" id="freqCountInput">
+<input type="number" min="1" max="30" value="${freqCountAttr}" id="freqCountInput">
 <span>veces por</span>
 <select id="freqPeriodInput">
 <option value="week" ${state.freqPeriod === 'week' ? 'selected' : ''}>semana</option>
@@ -2100,14 +2850,15 @@ ${state.selectedFreq === 'custom' ? `
 </div>
 `;
 
-  document.querySelectorAll('.freq-option').forEach(opt => {
-    opt.onclick = () => {
-      state.selectedFreq = opt.dataset.freq;
-      renderModalContent();
-    };
-  });
+    document.querySelectorAll('.freq-option').forEach(opt => {
+      opt.onclick = () => {
+        state.selectedFreq = opt.dataset.freq;
+        renderModalContent();
+      };
+    });
+  }
 
-  if (state.selectedFreq === 'custom') {
+  if (!lockedFreq && state.selectedFreq === 'custom') {
     document.getElementById('freqCountInput').onchange = (e) => {
       state.freqCount = parseInt(e.target.value || '1', 10);
     };
@@ -2120,34 +2871,35 @@ ${state.selectedFreq === 'custom' ? `
   // fijo y sin handler de click -- el tipo de un hábito existente nunca
   // puede cambiarse desde esta UI (ver resolveHabitKindForSave()).
   const kindGroup = document.getElementById('kindOptions');
+  kindGroup.innerHTML = '';
+  const kindSelect = document.createElement('select');
+  kindSelect.id = 'kindSelect';
+  kindSelect.className = 'kind-select';
+  kindSelect.setAttribute('aria-describedby', 'kindHelp');
+  HABIT_KIND_CHOICES.forEach(choice => {
+    const option = document.createElement('option');
+    option.value = choice.kind;
+    option.textContent = choice.label;
+    kindSelect.appendChild(option);
+  });
+  kindSelect.value = state.selectedKind;
+  const kindHelp = document.createElement('div');
+  kindHelp.id = 'kindHelp';
+  kindHelp.className = 'kind-help';
+  kindHelp.textContent = getHabitKindChoice(state.selectedKind).help;
+  kindGroup.appendChild(kindSelect);
+  kindGroup.appendChild(kindHelp);
   if (state.editingId) {
-    const kindLabel = state.selectedKind === 'quantitative' ? 'Cuantitativo (minutos)' : 'Booleano (check diario)';
-    const readonly = document.createElement('div');
-    readonly.className = 'kind-option selected kind-readonly';
-    readonly.textContent = kindLabel;
+    kindSelect.disabled = true;
     const note = document.createElement('div');
     note.className = 'kind-readonly-note';
-    note.textContent = 'El tipo de un hábito no se puede cambiar una vez creado.';
-    kindGroup.innerHTML = '';
-    kindGroup.appendChild(readonly);
+    note.textContent = 'Esta forma de registro no se puede cambiar una vez creado el hábito.';
     kindGroup.appendChild(note);
   } else {
-    kindGroup.innerHTML = `
-<div class="kind-option ${state.selectedKind === 'boolean' ? 'selected' : ''}" data-kind="boolean">
-<strong>Booleano</strong>
-<div class="kind-desc">Check diario (sí/no)</div>
-</div>
-<div class="kind-option ${state.selectedKind === 'quantitative' ? 'selected' : ''}" data-kind="quantitative">
-<strong>Cuantitativo</strong>
-<div class="kind-desc">Registrar minutos por día</div>
-</div>
-`;
-    document.querySelectorAll('.kind-option').forEach(opt => {
-      opt.onclick = () => {
-        state.selectedKind = opt.dataset.kind;
-        renderModalContent();
-      };
-    });
+    kindSelect.onchange = () => {
+      state.selectedKind = getHabitKindChoice(kindSelect.value).kind;
+      renderModalContent();
+    };
   }
 
   const targetGroup = document.getElementById('targetGroup');
@@ -2164,6 +2916,18 @@ ${state.selectedFreq === 'custom' ? `
   } else {
     targetGroup.hidden = true;
   }
+}
+
+// Formas de registro que ve el usuario. Los valores internos siguen siendo
+// los tipos persistidos ('boolean' / 'quantitative'); esos términos técnicos
+// no se muestran en el formulario.
+const HABIT_KIND_CHOICES = [
+  { kind: 'boolean', label: 'Marcar como completado', help: 'Cada día marcás si cumpliste tu hábito.' },
+  { kind: 'quantitative', label: 'Registrar tiempo', help: 'Anotá las horas y minutos que le dedicaste.' }
+];
+
+function getHabitKindChoice(kind) {
+  return HABIT_KIND_CHOICES.find(c => c.kind === kind) || HABIT_KIND_CHOICES[0];
 }
 
 function closeModal() {
@@ -2195,16 +2959,22 @@ function saveHabit() {
   const kind = resolveHabitKindForSave(existing, state.selectedKind);
   if (!isValidKind(kind)) { alert('Tipo de hábito inválido'); return; }
 
+  // La frecuencia y el estado archivado de un hábito existente nunca se
+  // pierden al editarlo (Backup v3): el modal no puede representar 'loop-month'
+  // ni archivado, así que se conservan vía resolvers puros.
   const habit = {
     id: state.editingId || generateHabitId(),
     name,
     icon: state.selectedIcon,
     color: state.selectedColor,
-    freq: state.selectedFreq,
-    freqCount: state.freqCount,
-    freqPeriod: state.freqPeriod,
+    ...resolveFrequencyForSave(existing, {
+      freq: state.selectedFreq,
+      freqCount: state.freqCount,
+      freqPeriod: state.freqPeriod
+    }),
     createdAt: existing ? existing.createdAt : getToday(),
-    kind
+    kind,
+    archived: resolveArchivedForSave(existing)
   };
 
   if (kind === 'quantitative') {
@@ -2239,7 +3009,8 @@ function ensureSelectedHabitId() {
     return;
   }
   if (!state.selectedHabitId || !state.habits.some(h => h.id === state.selectedHabitId)) {
-    state.selectedHabitId = state.habits[0].id;
+    // Primero un activo si hay; si todos están archivados, el primero.
+    state.selectedHabitId = getHabitsForHistory()[0].id;
   }
 }
 
@@ -2249,10 +3020,10 @@ function updateCalendarSelect() {
   ensureSelectedHabitId();
 
   select.innerHTML = '';
-  state.habits.forEach(h => {
+  getHabitsForHistory().forEach(h => {
     const option = document.createElement('option');
     option.value = h.id;
-    option.textContent = `${h.icon} ${h.name}`;
+    option.textContent = `${h.icon} ${getHabitDisplayName(h)}`;
     select.appendChild(option);
   });
 
@@ -2267,10 +3038,10 @@ function updateStatsSelect() {
   select.innerHTML = '';
   if (state.habits.length === 0) return;
 
-  state.habits.forEach(h => {
+  getHabitsForHistory().forEach(h => {
     const option = document.createElement('option');
     option.value = h.id;
-    option.textContent = `${h.icon} ${h.name}`;
+    option.textContent = `${h.icon} ${getHabitDisplayName(h)}`;
     select.appendChild(option);
   });
   const allOption = document.createElement('option');
@@ -2285,18 +3056,12 @@ function renderCalendar() {
   const grid = document.getElementById('calendarGrid');
 
   if (state.habits.length === 0) {
-    grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #888; padding: 20px;">Agrega un hábito primero</div>';
+    grid.innerHTML = '<div class="calendar-empty">Agrega un hábito primero</div>';
     return;
   }
 
   const habitId = state.selectedHabitId;
   const habit = state.habits.find(h => h.id === habitId);
-  // Color de relleno de los días completados: el propio color del hábito
-  // si es válido, o un verde de respaldo si por algún motivo no lo es
-  // (nunca debería faltar para un hábito ya persistido, pero el dato
-  // persistido se trata como no confiable, igual que en el resto del archivo).
-  const fillColor = habit && isValidColorHex(habit.color) ? habit.color : '#4CAF50';
-  const fillTextColor = getContrastTextColor(fillColor);
   const year = state.currentMonth.getFullYear();
   const month = state.currentMonth.getMonth();
 
@@ -2326,7 +3091,7 @@ function renderCalendar() {
     const isFuture = date > today;
     const deco = getCalendarDayDecoration(dateStr, habit);
 
-    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${deco.stateClass}" data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
+    html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${deco.stateClass}" data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}"><span class="calendar-day-num">${day}</span>${deco.badgeHtml}</div>`;
   }
 
   for (let day = 1; day <= daysInMonth; day++) {
@@ -2337,7 +3102,7 @@ function renderCalendar() {
     const deco = getCalendarDayDecoration(dateStr, habit);
 
     html += `<div class="calendar-day ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''} ${deco.stateClass}"
-data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}"><span class="calendar-day-num">${day}</span>${deco.badgeHtml}</div>`;
   }
 
   const remainingDays = 42 - (startDay + daysInMonth);
@@ -2348,7 +3113,7 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaEx
     const deco = getCalendarDayDecoration(dateStr, habit);
 
     html += `<div class="calendar-day other-month ${isFuture ? 'future' : ''} ${deco.stateClass}"
-data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}">${day}${deco.badgeHtml}</div>`;
+data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaExtra}"><span class="calendar-day-num">${day}</span>${deco.badgeHtml}</div>`;
   }
 
   grid.innerHTML = html;
@@ -2358,21 +3123,9 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaEx
   // arriba, para no exponer una superficie de inyección de atributos.
   document.querySelectorAll('.calendar-day').forEach(cell => {
     cell.dataset.habit = habitId;
-    // Reemplaza el punto decorativo anterior: el día completado/con minutos
-    // rellena todo el cuadrado con el color del hábito, con el texto del
-    // número recalculado para seguir siendo legible sobre ese color exacto.
-    // "quantity-partial" (minutos registrados sin alcanzar el objetivo) usa
-    // el mismo color a mitad de opacidad para distinguirse visualmente de
-    // "completed"/"quantity-met" sin introducir una paleta nueva.
-    if (cell.classList.contains('completed') || cell.classList.contains('quantity-met')) {
-      cell.style.background = fillColor;
-      cell.style.color = fillTextColor;
-    } else if (cell.classList.contains('quantity-partial')) {
-      cell.style.background = fillColor;
-      cell.style.color = fillTextColor;
-      cell.style.opacity = '0.5';
-    }
-    cell.onclick = () => {
+    // Los estados (completado, minutos, SKIP) se pintan solo con clases CSS:
+    // paleta fija con contraste verificado, sin colores inline por hábito.
+    const onCellActivate = () => {
       if (hasStorageCorruption()) return;
       if (cell.dataset.future === 'true') return;
       const dateStr = cell.dataset.date;
@@ -2386,14 +3139,44 @@ data-date="${dateStr}" data-future="${isFuture}" aria-label="${day}${deco.ariaEx
         return;
       }
       if (habit.kind !== 'boolean') return;
-      if (!state.completions[dateStr]) state.completions[dateStr] = {};
-      state.completions[dateStr][hid] = !state.completions[dateStr][hid];
-      saveData();
+      // Ciclo sin registro -> completado -> SKIP -> sin registro, con las
+      // validaciones de fecha (real, no futura, no anterior a createdAt).
+      const result = cycleBooleanDay(hid, dateStr);
+      if (!result.ok) return;
       renderCalendar();
       renderHabits();
       renderStats();
     };
+    cell.onclick = onCellActivate;
+
+    // Accesibilidad de las celdas editables: botón con foco de teclado
+    // (Enter o espacio). En hábitos booleanos la etiqueta dice el estado
+    // actual y qué hará el toque.
+    const editable = cell.dataset.future !== 'true' && isCalendarDateEditable(habit, cell.dataset.date);
+    if (habit.kind === 'boolean') {
+      cell.setAttribute('aria-label', getBooleanDayAriaLabel(habit, cell.dataset.date));
+    }
+    if (editable && (habit.kind === 'boolean' || habit.kind === 'quantitative')) {
+      cell.setAttribute('role', 'button');
+      cell.tabIndex = 0;
+      cell.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onCellActivate();
+        }
+      };
+    }
+    // Anterior a la creación: editable, solo con un tono propio (no cuenta
+    // en las estadísticas). Las futuras ya tienen su estilo.
+    if (editable && isBeforeCreated(habit, cell.dataset.date)) {
+      cell.classList.add('before-created');
+    }
   });
+
+  // Leyenda del ciclo: solo para hábitos booleanos (los cuantitativos editan
+  // minutos y no usan estos estados).
+  const legend = document.getElementById('calendarLegend');
+  if (legend) legend.hidden = !(habit && habit.kind === 'boolean');
 
   renderCalendarQuantityEditor(habit && habit.kind === 'quantitative' ? habit : null, state.calendarEditingDate);
 }
@@ -2412,12 +3195,21 @@ function getCalendarDayDecoration(dateStr, habit) {
     const met = target !== null && actual >= target;
     return {
       stateClass: met ? 'quantity-met' : 'quantity-partial',
-      badgeHtml: `<span class="calendar-day-check" aria-hidden="true">${actual}m</span>`,
+      badgeHtml: `<span class="calendar-day-check calendar-day-qty" aria-hidden="true">${formatMinutesCompact(actual)}</span>`,
       ariaExtra: met ? ', objetivo cumplido' : ', con minutos registrados'
     };
   }
 
   const isCompleted = state.completions[dateStr]?.[habit.id];
+  // SKIP (neutral): se muestra distinto de completado y de día sin registro.
+  // Un completado siempre tiene prioridad (el contrato impide ambos a la vez).
+  if (!isCompleted && state.skips[dateStr]?.[habit.id] === true) {
+    return {
+      stateClass: 'skipped',
+      badgeHtml: '<span class="calendar-day-check" aria-hidden="true">↷</span>',
+      ariaExtra: ', omitido'
+    };
+  }
   return {
     stateClass: isCompleted ? 'completed' : '',
     badgeHtml: isCompleted ? '<span class="calendar-day-check" aria-hidden="true">✓</span>' : '',
@@ -2464,15 +3256,120 @@ function calculateQuantityStats(habit) {
   const todayMinutes = getActualMinutes(habit.id, getToday());
   const todayProgressPct = target !== null ? Math.min(100, Math.round((todayMinutes / target) * 100)) : null;
 
-  const last7Days = [];
-  for (let i = 6; i >= 0; i--) {
+  return { totalMinutes, todayMinutes, target, todayProgressPct };
+}
+
+// Gráfico de "Últimos 30 días": hoy y los 29 anteriores, en orden
+// cronológico. Mismo criterio diario que usaba el gráfico de 7 días: un día
+// booleano es completado / SKIP / sin registro y un día de tiempo son sus
+// minutos registrados; no infiere períodos ni métricas (frecuencias
+// semanales, loop-month y archivados muestran solo el dato diario). Un día
+// anterior a createdAt sin ningún registro se marca como "antes de crear".
+const CHART_DAYS = 30;
+const CHART_TICK_INDEXES = [0, 7, 14, 21, CHART_DAYS - 1];
+const CHART_MONTH_ABBR = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+function getChartDays(habit, count = CHART_DAYS) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = [];
+  for (let i = count - 1; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
-    const ds = toLocalDateStr(d);
-    last7Days.push({ label: ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()], value: getActualMinutes(habit.id, ds) });
+    const dateStr = toLocalDateStr(d);
+    const entry = { dateStr, day: d.getDate(), month: d.getMonth(), isToday: i === 0 };
+    if (habit.kind === 'quantitative') {
+      entry.value = getActualMinutes(habit.id, dateStr);
+      entry.hasRecord = !!state.quantities[dateStr]?.[habit.id];
+      entry.skipped = false;
+    } else {
+      const done = !!state.completions[dateStr]?.[habit.id];
+      entry.value = done ? 1 : 0;
+      // SKIP se distingue de un día sin registro.
+      entry.skipped = !done && state.skips[dateStr]?.[habit.id] === true;
+      entry.hasRecord = done || entry.skipped;
+    }
+    entry.beforeCreated = !entry.hasRecord && typeof habit.createdAt === 'string' && dateStr < habit.createdAt;
+    days.push(entry);
   }
+  return days;
+}
 
-  return { totalMinutes, todayMinutes, target, todayProgressPct, last7Days };
+function describeChartDay(habit, day) {
+  const date = `${day.day} de ${CHART_MONTH_ABBR[day.month]}`;
+  if (habit.kind === 'quantitative') {
+    if (day.hasRecord || day.value > 0) return `${date}: ${formatMinutesText(day.value)}`;
+    return `${date}: ${day.beforeCreated ? 'antes de crear el hábito' : 'sin registro'}`;
+  }
+  if (day.skipped) return `${date}: omitido (SKIP)`;
+  if (day.value === 1) return `${date}: completado`;
+  return `${date}: ${day.beforeCreated ? 'antes de crear el hábito' : 'sin registro'}`;
+}
+
+// Resumen para lectores de pantalla: el gráfico entero es una imagen con
+// descripción; el detalle por día queda en el tooltip de cada barra.
+function summarizeChartDays(habit, days) {
+  if (habit.kind === 'quantitative') {
+    const total = days.reduce((sum, d) => sum + d.value, 0);
+    const withTime = days.filter(d => d.value > 0).length;
+    return `Últimos ${days.length} días: ${withTime} ${withTime === 1 ? 'día' : 'días'} con tiempo registrado, ${formatMinutesText(total)} en total.`;
+  }
+  const done = days.filter(d => d.value === 1).length;
+  const skipped = days.filter(d => d.skipped).length;
+  return `Últimos ${days.length} días: ${done} ${done === 1 ? 'día completado' : 'días completados'}, ${skipped} ${skipped === 1 ? 'omitido' : 'omitidos'} (SKIP).`;
+}
+
+function createLastDaysChart(habit) {
+  const days = getChartDays(habit);
+  const chart = document.createElement('div');
+  chart.className = 'chart';
+  const chartTitle = document.createElement('div');
+  chartTitle.className = 'chart-title';
+  chartTitle.textContent = `Últimos ${CHART_DAYS} días`;
+  const chartBars = document.createElement('div');
+  chartBars.className = 'chart-bars chart-bars-30';
+  chartBars.setAttribute('role', 'img');
+  chartBars.setAttribute('aria-label', summarizeChartDays(habit, days));
+
+  const scaleBase = habit.kind === 'quantitative'
+    ? ((habit.target && habit.target.minutes) || Math.max(1, ...days.map(d => d.value)))
+    : 1;
+
+  days.forEach((day, index) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chart-bar-wrapper';
+    wrapper.title = describeChartDay(habit, day);
+    const bar = document.createElement('div');
+    bar.className = 'chart-bar';
+    if (day.skipped) {
+      bar.style.height = '30%';
+      bar.classList.add('chart-bar-skipped');
+    } else if (day.value > 0) {
+      bar.style.height = `${Math.min(100, Math.round((day.value / scaleBase) * 100))}%`;
+    } else {
+      bar.style.height = '0%';
+      bar.classList.add(day.beforeCreated ? 'chart-bar-na' : 'chart-bar-empty');
+    }
+    if (day.isToday) wrapper.classList.add('chart-bar-today');
+    const track = document.createElement('div');
+    track.className = 'chart-bar-track';
+    track.appendChild(bar);
+    wrapper.appendChild(track);
+    const label = document.createElement('div');
+    label.className = 'chart-label';
+    if (CHART_TICK_INDEXES.includes(index)) {
+      label.classList.add('chart-tick');
+      if (index === 0) label.classList.add('chart-tick-first');
+      if (index === days.length - 1) label.classList.add('chart-tick-last');
+      label.textContent = day.isToday ? 'Hoy' : `${day.day} ${CHART_MONTH_ABBR[day.month]}`;
+    }
+    wrapper.appendChild(label);
+    chartBars.appendChild(wrapper);
+  });
+
+  chart.appendChild(chartTitle);
+  chart.appendChild(chartBars);
+  return chart;
 }
 
 // habit.name/icon/color son datos persistidos, no confiables: se asignan vía
@@ -2493,7 +3390,7 @@ function createQuantityStatsCard(habit) {
   iconSpan.textContent = habit.icon;
   const titleSpan = document.createElement('span');
   titleSpan.className = 'stats-title';
-  titleSpan.textContent = habit.name;
+  titleSpan.textContent = getHabitDisplayName(habit);
   header.appendChild(iconSpan);
   header.appendChild(titleSpan);
 
@@ -2504,10 +3401,10 @@ function createQuantityStatsCard(habit) {
   const numbersDiv = document.createElement('div');
   numbersDiv.className = 'stats-numbers';
   [
-    [`${stats.todayMinutes} min`, 'Minutos hoy'],
-    [stats.target !== null ? `${stats.target} min` : 'Sin objetivo', 'Objetivo diario'],
+    [formatMinutesText(stats.todayMinutes), 'Tiempo hoy'],
+    [stats.target !== null ? formatMinutesText(stats.target) : 'Sin objetivo', 'Objetivo diario'],
     [stats.todayProgressPct !== null ? `${stats.todayProgressPct}%` : '—', 'Progreso hoy'],
-    [`${stats.totalMinutes} min`, 'Total acumulado']
+    [formatMinutesText(stats.totalMinutes), 'Total acumulado']
   ].forEach(([value, label]) => {
     const box = document.createElement('div');
     box.className = 'stat-box';
@@ -2522,32 +3419,7 @@ function createQuantityStatsCard(habit) {
     numbersDiv.appendChild(box);
   });
 
-  const chart = document.createElement('div');
-  chart.className = 'chart';
-  const chartTitle = document.createElement('div');
-  chartTitle.className = 'chart-title';
-  chartTitle.textContent = 'Últimos 7 días (minutos)';
-  const chartBars = document.createElement('div');
-  chartBars.className = 'chart-bars';
-
-  const scaleBase = stats.target || Math.max(1, ...stats.last7Days.map(d => d.value));
-  stats.last7Days.forEach(day => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'chart-bar-wrapper';
-    const bar = document.createElement('div');
-    bar.className = 'chart-bar';
-    bar.style.height = `${Math.min(100, Math.round((day.value / scaleBase) * 100))}%`;
-    if (safeColor) bar.style.background = safeColor;
-    const label = document.createElement('div');
-    label.className = 'chart-label';
-    label.textContent = day.label;
-    wrapper.appendChild(bar);
-    wrapper.appendChild(label);
-    chartBars.appendChild(wrapper);
-  });
-
-  chart.appendChild(chartTitle);
-  chart.appendChild(chartBars);
+  const chart = createLastDaysChart(habit);
 
   card.appendChild(header);
   card.appendChild(freqDiv);
@@ -2559,21 +3431,6 @@ function createQuantityStatsCard(habit) {
 function createStatsCard(habit) {
   if (habit.kind === 'quantitative') return createQuantityStatsCard(habit);
   const stats = calculateStats(habit);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const last7Days = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const dateStr = toLocalDateStr(d);
-    const dayName = ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()];
-    last7Days.push({
-      label: dayName,
-      value: state.completions[dateStr]?.[habit.id] ? 1 : 0
-    });
-  }
-
   const safeColor = isValidColorHex(habit.color) ? habit.color : null;
 
   const card = document.createElement('div');
@@ -2587,7 +3444,7 @@ function createStatsCard(habit) {
   iconSpan.textContent = habit.icon;
   const titleSpan = document.createElement('span');
   titleSpan.className = 'stats-title';
-  titleSpan.textContent = habit.name;
+  titleSpan.textContent = getHabitDisplayName(habit);
   header.appendChild(iconSpan);
   header.appendChild(titleSpan);
 
@@ -2598,10 +3455,11 @@ function createStatsCard(habit) {
   const numbersDiv = document.createElement('div');
   numbersDiv.className = 'stats-numbers';
   [
-    [`${stats.successRate}%`, 'Tasa de éxito'],
-    [stats.currentStreak, 'Racha actual'],
-    [stats.bestStreak, 'Mejor racha'],
-    [stats.totalCompleted, 'Total completados']
+    [formatStatValue(stats.successRate, '%'), 'Tasa de éxito'],
+    [formatStatValue(stats.currentStreak), 'Racha actual'],
+    [formatStatValue(stats.bestStreak), 'Mejor racha'],
+    [stats.totalCompleted, 'Total completados'],
+    [stats.skippedDays, 'Días omitidos (SKIP)']
   ].forEach(([value, label]) => {
     const box = document.createElement('div');
     box.className = 'stat-box';
@@ -2616,35 +3474,23 @@ function createStatsCard(habit) {
     numbersDiv.appendChild(box);
   });
 
-  const chart = document.createElement('div');
-  chart.className = 'chart';
-  const chartTitle = document.createElement('div');
-  chartTitle.className = 'chart-title';
-  chartTitle.textContent = 'Últimos 7 días';
-  const chartBars = document.createElement('div');
-  chartBars.className = 'chart-bars';
-
-  last7Days.forEach(day => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'chart-bar-wrapper';
-    const bar = document.createElement('div');
-    bar.className = 'chart-bar';
-    bar.style.height = `${day.value * 100}%`;
-    if (safeColor) bar.style.background = safeColor;
-    const label = document.createElement('div');
-    label.className = 'chart-label';
-    label.textContent = day.label;
-    wrapper.appendChild(bar);
-    wrapper.appendChild(label);
-    chartBars.appendChild(wrapper);
-  });
-
-  chart.appendChild(chartTitle);
-  chart.appendChild(chartBars);
+  const chart = createLastDaysChart(habit);
 
   card.appendChild(header);
   card.appendChild(freqDiv);
   card.appendChild(numbersDiv);
+  if (stats.loopMonth) {
+    const note = document.createElement('div');
+    note.className = 'stats-note';
+    note.textContent = 'Frecuencia original de Loop: no se calcula como mes calendario, por eso no hay tasa ni racha (—).';
+    card.appendChild(note);
+  }
+  if (stats.archived) {
+    const note = document.createElement('div');
+    note.className = 'stats-note';
+    note.textContent = 'Hábito archivado: sin fecha de archivado no se calculan tasa ni rachas (—); los totales históricos se conservan.';
+    card.appendChild(note);
+  }
   card.appendChild(chart);
   return card;
 }
@@ -2660,7 +3506,7 @@ function renderStats() {
   // Por defecto, un único hábito (el seleccionado); "Mostrar todo" es la
   // única forma de ver todas las tarjetas a la vez -- nunca el default.
   const habitsToShow = state.statsShowAll
-    ? state.habits
+    ? getHabitsForHistory()
     : state.habits.filter(h => h.id === state.selectedHabitId);
 
   container.innerHTML = '';
